@@ -30,6 +30,7 @@ var touch_table_id := -1
 var touch_last := Vector2.ZERO
 var touch_panning := false
 var pinch_distance := 0.0
+var bank_scrolling := false
 var rotation_enabled := true
 
 var ui_root: Control
@@ -46,6 +47,7 @@ var size_picker: OptionButton
 var top_hint: Label
 
 func _ready() -> void:
+	_apply_mobile_scale()
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	if source == null:
 		push_error("Bundled puzzle image failed to load: res://assets/emberbound.png")
@@ -57,6 +59,24 @@ func _ready() -> void:
 	_build_ui()
 	_start_puzzle(false)
 	get_viewport().size_changed.connect(_on_viewport_resized)
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		if reference_overlay != null and reference_overlay.visible:
+			reference_overlay.visible = false
+		else:
+			get_tree().quit()
+
+# Phones report a large pixel canvas, which shrinks the 1280x800 layout to unreadable
+# sizes. Scale the UI so the base layout maps to roughly 1.2 logical units per dp.
+func _apply_mobile_scale() -> void:
+	if not OS.has_feature("mobile"):
+		return
+	var screen := Vector2(DisplayServer.window_get_size())
+	var dpi := maxf(DisplayServer.screen_get_dpi(), 120)
+	var stretch := minf(screen.x / 1280.0, screen.y / 800.0)
+	var target_height := clampf(screen.y * 160.0 / dpi * 1.2, 500, 800)
+	get_window().content_scale_factor = maxf(1.0, screen.y / (stretch * target_height))
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2(-5000, -5000), Vector2(10000, 10000)), Color("293a3e"), true)
@@ -95,12 +115,15 @@ func _start_puzzle(new_seed: bool) -> void:
 		bank.toggle_collapsed()
 	bank.configure(generated, source, cell, seed_value)
 	complete_banner.visible = false
+	_fit_camera()
+	queue_redraw()
+
+func _fit_camera() -> void:
 	var viewport_size := get_viewport_rect().size
 	var available := Vector2(viewport_size.x - 64, viewport_size.y - bank.bank_height - 85)
 	var fit := minf(available.x / BOARD_SIZE.x, available.y / BOARD_SIZE.y)
 	camera.zoom = Vector2.ONE * fit
 	camera.position = Vector2(0, (bank.bank_height - 53) * 0.5 / fit)
-	queue_redraw()
 
 func _build_ui() -> void:
 	ui_root = Control.new()
@@ -154,6 +177,8 @@ func _build_ui() -> void:
 	top.add_child(spacer)
 	top_hint = Label.new()
 	top_hint.text = "Match touching edges anywhere  •  Drag joined groups  •  Wheel zoom"
+	if DisplayServer.is_touchscreen_available():
+		top_hint.text = "Pinch to zoom  •  Double-tap to rotate  •  Swipe bank to scroll"
 	top_hint.add_theme_color_override("font_color", Color("b8c8c8"))
 	top_hint.add_theme_font_size_override("font_size", 12)
 	top_hint.visible = get_viewport_rect().size.x >= 1050
@@ -235,6 +260,9 @@ func _build_reference() -> void:
 
 func _on_viewport_resized() -> void:
 	_layout_reference()
+	# Android settles its immersive window size after launch; refit so the board starts fully visible.
+	if OS.has_feature("mobile"):
+		_fit_camera()
 	top_hint.visible = get_viewport_rect().size.x >= 1050
 	if preview_panel.visible:
 		preview_panel.position.x = clampf(preview_panel.position.x, 8, get_viewport_rect().size.x - preview_panel.size.x - 8)
@@ -342,6 +370,9 @@ func _zoom_at(screen_position: Vector2, multiplier: float) -> void:
 	camera.position += before - after
 
 func _input(event: InputEvent) -> void:
+	# Touch is handled directly; mouse events emulated from touch exist only so GUI buttons respond.
+	if event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			reference_overlay.visible = false
@@ -434,6 +465,10 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 			pinch_distance = _finger_distance()
 			touch_panning = true
 			return
+		var from_grip := event.position - Vector2(get_viewport_rect().size.x * 0.5, bank.position.y)
+		if absf(from_grip.x) < 60 and from_grip.y > -20 and from_grip.y < 10 and not bank.collapsed:
+			resizing_bank = true
+			return
 		if not _is_table_screen(event.position):
 			return
 		if selected_bank_id >= 0:
@@ -442,6 +477,9 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 		var world := _screen_to_world(event.position)
 		var picked := _pick_table_piece(world)
 		_select_table_piece(picked)
+		if event.double_tap and picked >= 0 and rotation_enabled:
+			_rotate_selected()
+			return
 		if picked >= 0 and manager.request_pickup(picked):
 			touch_table_id = picked
 			drag_offset = world - manager.get_piece(picked).current_position
@@ -451,6 +489,8 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 		touch_last = event.position
 	else:
 		fingers.erase(event.index)
+		resizing_bank = false
+		bank_scrolling = false
 		if bank_press_id >= 0:
 			if bank_dragging and _is_table_screen(event.position):
 				_place_bank_piece(bank_press_id, event.position)
@@ -468,8 +508,23 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 func _handle_touch_drag(event: InputEventScreenDrag) -> void:
 	var previous: Vector2 = fingers.get(event.index, event.position - event.relative)
 	fingers[event.index] = event.position
+	if resizing_bank:
+		bank.set_height(get_viewport_rect().size.y - event.position.y)
+		return
 	if bank_press_id >= 0:
+		if bank_scrolling:
+			bank.scroll.scroll_horizontal -= int(event.relative.x)
+			return
 		if not bank_dragging and event.position.distance_to(bank_press_screen) > 8:
+			# A sideways swipe that stays in the bank scrolls it; anything else pulls the piece out.
+			var delta := event.position - bank_press_screen
+			if not _is_table_screen(event.position) and absf(delta.x) > absf(delta.y):
+				bank_scrolling = true
+				selected_bank_id = -1
+				bank.set_selected(-1)
+				_hide_preview()
+				bank.scroll.scroll_horizontal -= int(delta.x)
+				return
 			_start_bank_drag(event.position)
 		if bank_dragging:
 			_update_ghost(event.position)

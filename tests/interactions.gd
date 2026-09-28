@@ -39,6 +39,14 @@ func _touch_drag(position: Vector2, relative: Vector2, index: int = 0) -> void:
 	event.index = index
 	root.push_input(event, true)
 
+func _double_tap(position: Vector2) -> void:
+	var event := InputEventScreenTouch.new()
+	event.position = position
+	event.pressed = true
+	event.double_tap = true
+	root.push_input(event, true)
+	_touch(position, false)
+
 func _run() -> void:
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	var game: Node2D = scene.instantiate()
@@ -180,6 +188,44 @@ func _run() -> void:
 	var touch_group_delta: Vector2 = game.manager.pieces[0].current_position - touch_group_before
 	var touch_member_delta: Vector2 = game.manager.pieces[1].current_position - touch_member_before
 	_check(touch_group_delta.length() > 20 and touch_group_delta.distance_to(touch_member_delta) < 0.01, "touch dragging a joined piece moves group")
+	var emulated := InputEventMouseButton.new()
+	emulated.device = InputEvent.DEVICE_ID_EMULATION
+	emulated.button_index = MOUSE_BUTTON_WHEEL_UP
+	emulated.pressed = true
+	emulated.position = Vector2(600, 300)
+	var emulated_zoom_before: float = game.camera.zoom.x
+	root.push_input(emulated, true)
+	await process_frame
+	_check(is_equal_approx(game.camera.zoom.x, emulated_zoom_before), "mouse events emulated from touch are ignored")
+	var swipe_item: PieceBankItem = game.bank.row.get_child(2)
+	var swipe_start := swipe_item.global_position + Vector2(45, 50)
+	game.bank.scroll.scroll_horizontal = 0
+	_touch(swipe_start, true)
+	_touch_drag(swipe_start + Vector2(-60, 0), Vector2(-60, 0))
+	_touch_drag(swipe_start + Vector2(-120, 0), Vector2(-60, 0))
+	_touch(swipe_start + Vector2(-120, 0), false)
+	await process_frame
+	_check(game.bank.scroll.scroll_horizontal > 60, "sideways swipe scrolls the bank")
+	_check(not game.manager.pieces[swipe_item.piece_id].is_on_table and game.selected_bank_id == -1, "bank swipe neither places nor selects a piece")
+	var touch_height_before: float = game.bank.bank_height
+	var touch_grip := Vector2(game.get_viewport_rect().size.x * 0.5 + 30, game.bank.position.y - 5)
+	_touch(touch_grip, true)
+	_touch_drag(touch_grip + Vector2(0, 40), Vector2(0, 40))
+	_touch(touch_grip + Vector2(0, 40), false)
+	await process_frame
+	_check(game.bank.bank_height < touch_height_before - 30, "touch on bank grip resizes bank")
+	game._set_rotation_enabled(true)
+	await process_frame
+	var tap_point := Vector2(700, 300)
+	game._place_bank_piece(game.bank.row.get_child(0).piece_id, tap_point)
+	var tap_id: int = game.selected_table_id
+	var rotation_before: int = game.manager.pieces[tap_id].current_rotation
+	var tap_grab: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[tap_id].current_position + game.cell * 0.5)
+	_touch(tap_grab, true)
+	_touch(tap_grab, false)
+	_double_tap(tap_grab)
+	await process_frame
+	_check(game.manager.pieces[tap_id].current_rotation != rotation_before, "double-tap rotates a table piece")
 	if failures == 0:
-		print("INTERACTION TEST PASSED: free cluster join/drag, bank click/drag/resize, wheel/Space/middle pan, touch select/drag/place/pan/pinch")
+		print("INTERACTION TEST PASSED: free cluster join/drag, bank click/drag/resize, wheel/Space/middle pan, touch select/drag/place/pan/pinch/swipe/grip/double-tap")
 	quit(0 if failures == 0 else 1)

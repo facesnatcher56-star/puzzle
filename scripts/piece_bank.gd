@@ -93,7 +93,7 @@ func _apply_height() -> void:
 func set_height(value: float) -> void:
 	if collapsed:
 		return
-	bank_height = clampf(value, 122, 340)
+	bank_height = clampf(value, 122, maxf(122, minf(340, get_viewport_rect().size.y * 0.5)))
 	expanded_height = bank_height
 	_apply_height()
 	_layout()

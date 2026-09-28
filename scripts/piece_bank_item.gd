@@ -32,9 +32,11 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2(3, 3), size - Vector2(6, 6)), Color("ddb96c") if active else Color("52616b"), false, 1.5)
 
 func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.device == InputEvent.DEVICE_ID_EMULATION:
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		pressed.emit(piece_id, event.position + global_position)
 		accept_event()
 	elif event is InputEventScreenTouch and event.pressed:
-		pressed.emit(piece_id, event.position)
+		pressed.emit(piece_id, event.position + global_position)
 		accept_event()
