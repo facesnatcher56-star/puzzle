@@ -1,9 +1,9 @@
 extends Node2D
 
-const SOURCE_IMAGE: Texture2D = preload("res://assets/harbor.png")
+const SOURCE_IMAGE: Texture2D = preload("res://assets/emberbound.png")
 const PIECE_SCENE: PackedScene = preload("res://scenes/puzzle_piece.tscn")
-const BOARD_SIZE := Vector2(1056, 704)
-const SIZES := [Vector2i(6, 4), Vector2i(8, 6), Vector2i(12, 8)]
+const BOARD_SIZE := Vector2(1122, 1402)
+const SIZES := [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(10, 25)]
 
 @onready var camera: Camera2D = $Camera2D
 @onready var piece_layer: Node2D = $Pieces
@@ -30,7 +30,7 @@ var touch_table_id := -1
 var touch_last := Vector2.ZERO
 var touch_panning := false
 var pinch_distance := 0.0
-var rotation_enabled := false
+var rotation_enabled := true
 
 var ui_root: Control
 var bank: PieceBank
@@ -46,8 +46,9 @@ var size_picker: OptionButton
 var top_hint: Label
 
 func _ready() -> void:
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	if source == null:
-		push_error("Bundled puzzle image failed to load: res://assets/harbor.png")
+		push_error("Bundled puzzle image failed to load: res://assets/emberbound.png")
 		return
 	manager.piece_changed.connect(_on_piece_changed)
 	manager.bank_changed.connect(func(): bank.refresh())
@@ -85,7 +86,7 @@ func _start_puzzle(new_seed: bool) -> void:
 	columns = grid.x
 	rows = grid.y
 	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE)
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
 	if generated.size() != columns * rows:
 		push_error("Puzzle generation failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -94,8 +95,11 @@ func _start_puzzle(new_seed: bool) -> void:
 		bank.toggle_collapsed()
 	bank.configure(generated, source, cell, seed_value)
 	complete_banner.visible = false
-	camera.position = Vector2(0, 120)
-	camera.zoom = Vector2.ONE * 0.60
+	var viewport_size := get_viewport_rect().size
+	var available := Vector2(viewport_size.x - 64, viewport_size.y - bank.bank_height - 85)
+	var fit := minf(available.x / BOARD_SIZE.x, available.y / BOARD_SIZE.y)
+	camera.zoom = Vector2.ONE * fit
+	camera.position = Vector2(0, (bank.bank_height - 53) * 0.5 / fit)
 	queue_redraw()
 
 func _build_ui() -> void:
@@ -117,7 +121,7 @@ func _build_ui() -> void:
 	top.add_theme_constant_override("separation", 9)
 	top_bg.add_child(top)
 	var title := Label.new()
-	title.text = "HARBOR JIGSAW"
+	title.text = "EMBERBOUND JIGSAW"
 	title.add_theme_font_size_override("font_size", 19)
 	title.add_theme_color_override("font_color", Color("f4e5c3"))
 	title.custom_minimum_size.x = 180
@@ -130,17 +134,19 @@ func _build_ui() -> void:
 	size_picker.focus_mode = Control.FOCUS_NONE
 	for grid in SIZES:
 		size_picker.add_item(str(grid.x * grid.y))
-	size_picker.select(1)
+	size_picker.select(3)
 	size_picker.item_selected.connect(func(_index: int): _start_puzzle(false))
 	top.add_child(size_picker)
 	var rotation_toggle := CheckButton.new()
 	rotation_toggle.text = "Rotation"
+	rotation_toggle.button_pressed = rotation_enabled
+	rotation_toggle.tooltip_text = "Random quarter-turns. Changing this restarts the puzzle."
 	rotation_toggle.focus_mode = Control.FOCUS_NONE
-	rotation_toggle.toggled.connect(func(value: bool): rotation_enabled = value; rotation_button.visible = value)
+	rotation_toggle.toggled.connect(_set_rotation_enabled)
 	top.add_child(rotation_toggle)
 	rotation_button = Button.new()
-	rotation_button.text = "↻ Rotate"
-	rotation_button.visible = false
+	rotation_button.text = "↻ Rotate (R)"
+	rotation_button.visible = rotation_enabled
 	rotation_button.pressed.connect(_rotate_selected)
 	top.add_child(rotation_button)
 	var spacer := Control.new()
@@ -287,8 +293,7 @@ func _show_preview(piece_id: int, screen_position: Vector2) -> void:
 	preview_panel.add_child(preview_view)
 	preview_view.setup(piece, source, cell)
 	var factor := minf(213.0 / cell.x, 213.0 / cell.y)
-	preview_view.scale = Vector2.ONE * factor
-	preview_view.position = Vector2(139, 121) - cell * factor * 0.5
+	preview_view.place_centered(Vector2(139, 121), factor)
 	var width := get_viewport_rect().size.x
 	preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
 	preview_panel.visible = true
@@ -315,8 +320,7 @@ func _update_ghost(screen_position: Vector2) -> void:
 		return
 	var over_table := _is_table_screen(screen_position)
 	var factor := camera.zoom.x if over_table else minf(85.0 / cell.x, 85.0 / cell.y)
-	drag_ghost.scale = Vector2.ONE * factor
-	drag_ghost.position = screen_position - cell * factor * 0.5
+	drag_ghost.place_centered(screen_position, factor)
 
 func _clear_ghost() -> void:
 	if drag_ghost:
@@ -332,7 +336,7 @@ func _screen_to_world(screen_position: Vector2) -> Vector2:
 
 func _zoom_at(screen_position: Vector2, multiplier: float) -> void:
 	var before := _screen_to_world(screen_position)
-	var value := clampf(camera.zoom.x * multiplier, 0.35, 2.6)
+	var value := clampf(camera.zoom.x * multiplier, 0.15, 3.0)
 	camera.zoom = Vector2.ONE * value
 	var after := _screen_to_world(screen_position)
 	camera.position += before - after
@@ -529,6 +533,7 @@ func _place_bank_piece(piece_id: int, screen_position: Vector2) -> void:
 	view.setup(manager.get_piece(piece_id), source, cell)
 	view.position = position
 	table_views[piece_id] = view
+	_on_piece_changed(piece_id)
 	selected_bank_id = -1
 	bank.set_selected(-1)
 	_hide_preview()
@@ -540,9 +545,7 @@ func _on_piece_changed(piece_id: int) -> void:
 	var piece := manager.get_piece(piece_id)
 	if table_views.has(piece_id):
 		var view: PuzzlePieceView = table_views[piece_id]
-		view.rotation_degrees = piece.current_rotation
-		var center := cell * 0.5
-		view.position = piece.current_position + center - center.rotated(deg_to_rad(piece.current_rotation))
+		view.place_centered(piece.current_position + cell * 0.5)
 
 func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()
@@ -569,9 +572,12 @@ func _spread_table_pieces() -> void:
 	for group_id in group_ids:
 		var members: Array = manager.clusters[group_id]
 		var first: PuzzlePieceState = manager.pieces[members[0]]
-		var bounds := Rect2(first.current_position, cell)
+		var bounds := Rect2(first.current_position + cell * 0.5, Vector2.ZERO)
 		for member_id in members:
-			bounds = bounds.merge(Rect2(manager.pieces[member_id].current_position, cell))
+			var member: PuzzlePieceState = manager.pieces[member_id]
+			for point in member.outline:
+				var world_point := member.current_position + cell * 0.5 + (point - cell * 0.5).rotated(deg_to_rad(member.current_rotation))
+				bounds = bounds.expand(world_point)
 		if cursor.x > origin.x and cursor.x + bounds.size.x > origin.x + available_width:
 			cursor = Vector2(origin.x, cursor.y + row_height)
 			row_height = 0
@@ -585,3 +591,8 @@ func _on_completed() -> void:
 	var seconds := manager.elapsed_seconds()
 	complete_label.text = "Puzzle Complete  •  %02d:%02d" % [seconds / 60, seconds % 60]
 	complete_banner.visible = true
+
+func _set_rotation_enabled(value: bool) -> void:
+	rotation_enabled = value
+	rotation_button.visible = value
+	_start_puzzle(false)

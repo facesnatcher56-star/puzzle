@@ -18,8 +18,7 @@ func setup(piece: PuzzlePieceState, source: Texture2D, cell: Vector2) -> void:
 	add_child(view)
 	view.setup(piece, source, cell)
 	var factor := minf(70.0 / cell.x, 70.0 / cell.y)
-	view.scale = Vector2.ONE * factor
-	view.position = Vector2(50, 48) - cell * factor * 0.5
+	view.place_centered(Vector2(50, 48), factor)
 	mouse_entered.connect(func(): hovered.emit(piece_id, get_global_mouse_position()))
 	mouse_exited.connect(func(): unhovered.emit(piece_id))
 

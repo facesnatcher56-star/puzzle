@@ -11,6 +11,7 @@ var border: Line2D
 var highlight: Line2D
 
 func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	data = piece
 	texture_source = source
 	cell_size = size
@@ -50,3 +51,9 @@ func set_selected(value: bool) -> void:
 
 func hit_test(world_point: Vector2) -> bool:
 	return Geometry2D.is_point_in_polygon(to_local(world_point), data.outline)
+
+# Position every representation around the same cell center, including quarter turns.
+func place_centered(center: Vector2, factor: float = 1.0) -> void:
+	scale = Vector2.ONE * factor
+	rotation_degrees = data.current_rotation
+	position = center - (cell_size * 0.5).rotated(rotation) * factor

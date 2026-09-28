@@ -43,6 +43,8 @@ func _run() -> void:
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	var game: Node2D = scene.instantiate()
 	root.add_child(game)
+	game.size_picker.select(1)
+	game._set_rotation_enabled(false)
 	await process_frame
 	await process_frame
 	var bank_item: PieceBankItem = game.bank.row.get_child(0)
