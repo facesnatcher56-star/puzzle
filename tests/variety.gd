@@ -66,6 +66,27 @@ func _run() -> void:
 	game._set_rotation_enabled(false)
 	for piece in game.manager.pieces:
 		_check(piece.current_rotation == 0, "Disabling rotation starts upright puzzle")
+	# The outer frame is untrimmed: every border side spans its piece's full width/height.
+	game._start_puzzle(false)
+	for piece in game.manager.pieces:
+		var sides := []
+		if piece.row == 0:
+			sides.append([0, piece.piece_size.x])
+		if piece.column == game.columns - 1:
+			sides.append([1, piece.piece_size.y])
+		if piece.row == game.rows - 1:
+			sides.append([2, piece.piece_size.x])
+		if piece.column == 0:
+			sides.append([3, piece.piece_size.y])
+		for side in sides:
+			var contour: PackedVector2Array = piece.edge_contours[side[0]]
+			_check(contour.size() == 2 and absf(contour[0].distance_to(contour[1]) - side[1]) < 0.01, "border side of piece %d is one full-length straight line" % piece.piece_id)
+	# Regression: overlapping tabs at a corner used to make some outlines self-intersect, which
+	# draws as a blank piece. Every piece must triangulate for a wide spread of seeds and sizes.
+	for grid in [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(13, 19)]:
+		for test_seed in range(1000, 1030):
+			for piece in PuzzleGenerator.generate(game.source, grid.x, grid.y, test_seed, game.BOARD_SIZE, true):
+				_check(Geometry2D.triangulate_polygon(piece.outline).size() >= 3, "%s seed %d piece %d has a drawable outline" % [grid, test_seed, piece.piece_id])
 	# Second (landscape) picture: transposed grid, same piece area, image round-trips through config.
 	game._use_image("restricted_facility")
 	game.grid_index = 3

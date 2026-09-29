@@ -28,7 +28,19 @@ static func generate(texture: Texture2D, columns: int, rows: int, seed_value: in
 			var b := Vector2(col_x[c], row_y[r + 1])
 			var chamfer_a := _vertex_chamfer(r, c, rows, columns, seed_value, cell)
 			var chamfer_b := _vertex_chamfer(r + 1, c, rows, columns, seed_value, cell)
-			seams["v_%d_%d" % [r, c]] = _make_seam(a, b, c == 0 or c == columns, rng, cell, chamfer_a, chamfer_b)
+			var vertical_flat := c == 0 or c == columns
+			var seam := _make_seam(a, b, vertical_flat, rng, cell, chamfer_a, chamfer_b)
+			# Tabs on the two seams meeting at a corner can overlap and make a piece's outline
+			# cross itself, which draws as a blank piece. Re-roll such seams from a separate
+			# generator so every seam that was already fine keeps its exact shape.
+			if not vertical_flat and _seam_collides(seam.points, seams, r, c, cell):
+				var retry_rng := RandomNumberGenerator.new()
+				retry_rng.seed = seed_value * 7 + r * 1009 + c
+				for attempt in range(40):
+					seam = _make_seam(a, b, false, retry_rng, cell, chamfer_a, chamfer_b)
+					if not _seam_collides(seam.points, seams, r, c, cell):
+						break
+			seams["v_%d_%d" % [r, c]] = seam
 	# Keep orientation randomness independent of the seam sampling.
 	var rotation_rng := RandomNumberGenerator.new()
 	rotation_rng.seed = seed_value + 7919
@@ -75,6 +87,29 @@ static func generate(texture: Texture2D, columns: int, rows: int, seed_value: in
 			result.append(piece)
 	return result
 
+# True if a vertical seam's tab comes too close to (or crosses) the tab of a horizontal seam
+# meeting it at either end. Horizontal seams are all built first, so only these pairs matter.
+static func _seam_collides(points: PackedVector2Array, seams: Dictionary, r: int, c: int, cell: Vector2) -> bool:
+	if points.size() <= 2:
+		return false
+	var clearance := minf(cell.x, cell.y) * 0.05
+	for key in ["h_%d_%d" % [r, c - 1], "h_%d_%d" % [r, c], "h_%d_%d" % [r + 1, c - 1], "h_%d_%d" % [r + 1, c]]:
+		if not seams.has(key):
+			continue
+		var other: PackedVector2Array = seams[key].points
+		if other.size() <= 2:
+			continue
+		# The first and last segments are the straight approaches to the shared vertex.
+		for i in range(1, points.size() - 2):
+			for j in range(1, other.size() - 2):
+				if Geometry2D.segment_intersects_segment(points[i], points[i + 1], other[j], other[j + 1]) != null:
+					return true
+				if Geometry2D.get_closest_point_to_segment(points[i], other[j], other[j + 1]).distance_to(points[i]) < clearance:
+					return true
+				if Geometry2D.get_closest_point_to_segment(other[j], points[i], points[i + 1]).distance_to(other[j]) < clearance:
+					return true
+	return false
+
 # Interior boundaries shift by up to 8% of the nominal spacing, independently in each
 # direction -- comfortably short of the ~50% that would let two lines cross and
 # invert a row/column.
@@ -90,13 +125,14 @@ static func _jittered_boundaries(count: int, length: float, sub_seed: int) -> Pa
 		result[i] = i * nominal + jitter_rng.randf_range(-0.08, 0.08) * nominal
 	return result
 
-# A small, deterministic bevel at most interior grid vertices (never the board's own 4
-# outer corners, which stay crisp) so pieces aren't uniformly sharp-cornered rectangles
+# A small, deterministic bevel at most interior grid vertices (never anywhere on the
+# board's outer border, which stays crisp and straight) so pieces aren't uniformly sharp-cornered rectangles
 # underneath their tabs. Purely a function of (row, column, seed), so every seam meeting
 # at a shared vertex -- built independently, possibly for a different piece entirely --
 # derives the exact same trim without any of them knowing about each other.
 static func _vertex_chamfer(r: int, c: int, rows: int, columns: int, seed_value: int, cell: Vector2) -> float:
-	if (r == 0 or r == rows) and (c == 0 or c == columns):
+	# Nothing on the board's outer border is trimmed, so the frame stays perfectly straight.
+	if r == 0 or r == rows or c == 0 or c == columns:
 		return 0.0
 	var vertex_rng := RandomNumberGenerator.new()
 	vertex_rng.seed = seed_value ^ (r * 92821 + c * 68917 + 104729)
