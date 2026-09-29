@@ -75,6 +75,10 @@ var host_port_field: LineEdit
 var host_status_label: Label
 var join_address_field: LineEdit
 var join_status_label: Label
+var join_games_list: VBoxContainer
+var join_games_status: Label
+
+var lan: LanDiscovery
 
 func _ready() -> void:
 	_apply_mobile_scale()
@@ -99,6 +103,9 @@ func _ready() -> void:
 	network.connection_failed.connect(_on_connection_failed)
 	network.server_disconnected.connect(_on_server_disconnected)
 	network.full_state_received.connect(_on_full_state_received)
+	lan = LanDiscovery.new()
+	add_child(lan)
+	lan.games_updated.connect(_on_lan_games_updated)
 	_build_ui()
 	_build_lobby_ui()
 	autosave_timer = Timer.new()
@@ -424,7 +431,7 @@ func _build_lobby_host() -> void:
 	lobby_stack.add_child(start_button)
 	host_status_label = Label.new()
 	host_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	host_status_label.text = "Forward this port (UDP) on your router and share your DDNS address with players."
+	host_status_label.text = "Players on this Wi-Fi see this game automatically. For players elsewhere, forward this port (UDP) on your router and share your DDNS address."
 	lobby_stack.add_child(host_status_label)
 	var back := Button.new()
 	back.text = "Back"
@@ -438,6 +445,20 @@ func _build_lobby_join() -> void:
 	title.text = "JOIN GAME"
 	title.add_theme_font_size_override("font_size", 18)
 	lobby_stack.add_child(title)
+	var games_label := Label.new()
+	games_label.text = "GAMES ON THIS NETWORK"
+	games_label.add_theme_font_size_override("font_size", 12)
+	lobby_stack.add_child(games_label)
+	join_games_status = Label.new()
+	join_games_status.text = "Searching..."
+	join_games_status.autowrap_mode = TextServer.AUTOWRAP_WORD
+	lobby_stack.add_child(join_games_status)
+	join_games_list = VBoxContainer.new()
+	lobby_stack.add_child(join_games_list)
+	var divider := Label.new()
+	divider.text = "— or enter an address —"
+	divider.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(divider)
 	join_address_field = LineEdit.new()
 	join_address_field.placeholder_text = "yourname.duckdns.org:%d" % NetworkSession.DEFAULT_PORT
 	lobby_stack.add_child(join_address_field)
@@ -450,8 +471,12 @@ func _build_lobby_join() -> void:
 	lobby_stack.add_child(join_status_label)
 	var back := Button.new()
 	back.text = "Back"
-	back.pressed.connect(_build_lobby_root)
+	back.pressed.connect(_on_join_back_pressed)
 	lobby_stack.add_child(back)
+	var discovery_error := lan.start_listening()
+	_on_lan_games_updated([])
+	if discovery_error != OK:
+		join_games_status.text = "Could not search this network (error %d). Try entering the host address below." % discovery_error
 
 func _on_solo_pressed() -> void:
 	_hide_lobby()
@@ -466,11 +491,17 @@ func _on_start_hosting_pressed() -> void:
 	if err != OK:
 		host_status_label.text = "Could not start hosting (error %d). Is the port already in use?" % err
 		return
+	lan.start_announcing(port, Callable(self, "_lan_label"))
 	_hide_lobby()
 	_begin_local_session()
 	_update_network_status()
 
+func _lan_label() -> String:
+	var peer_count := 1 + multiplayer.get_peers().size()
+	return "Emberbound Jigsaw (%d online)" % peer_count
+
 func _on_connect_pressed() -> void:
+	lan.stop()
 	var text := join_address_field.text.strip_edges()
 	var address := text
 	var port := NetworkSession.DEFAULT_PORT
@@ -487,6 +518,32 @@ func _on_connect_pressed() -> void:
 		return
 	join_status_label.text = "Connecting..."
 
+func _on_join_back_pressed() -> void:
+	lan.stop()
+	_build_lobby_root()
+
+func _on_lan_games_updated(games: Array) -> void:
+	if join_games_list == null:
+		return
+	for child in join_games_list.get_children():
+		join_games_list.remove_child(child)
+		child.queue_free()
+	join_games_status.visible = games.is_empty()
+	games.sort_custom(func(a, b): return a.label < b.label)
+	for game in games:
+		var entry := Button.new()
+		entry.text = "%s  (%s)" % [game.label, game.address]
+		entry.pressed.connect(_on_lan_game_pressed.bind(game.address, game.port))
+		join_games_list.add_child(entry)
+
+func _on_lan_game_pressed(address: String, port: int) -> void:
+	lan.stop()
+	var err := network.start_client(address, port)
+	if err != OK:
+		join_status_label.text = "Could not start connection (error %d)." % err
+		return
+	join_status_label.text = "Connecting..."
+
 func _begin_local_session() -> void:
 	var saved := SaveManager.load_state()
 	if not saved.is_empty():
@@ -495,6 +552,7 @@ func _begin_local_session() -> void:
 		_start_puzzle(false)
 
 func _on_leave_pressed() -> void:
+	lan.stop()
 	network.stop()
 	_update_network_status()
 	_show_lobby()
