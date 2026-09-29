@@ -74,6 +74,29 @@ func _run() -> void:
 	_check(SaveManager.load_state(CORRUPT_SAVE_PATH).is_empty(), "corrupted JSON loads as empty rather than throwing")
 	SaveManager.delete_save(CORRUPT_SAVE_PATH)
 
+	# Multiple puzzles in progress coexist in their own files and can be listed and deleted independently.
+	var test_dir := "user://test_saves"
+	for stale in ["a", "b"]:
+		SaveManager.delete_save(test_dir.path_join(stale + ".json"))
+	SaveManager.save(data, test_dir.path_join("a.json"))
+	var second := data.duplicate(true)
+	second["pieces"][0]["on_table"] = true
+	second["pieces"][0]["cluster_id"] = 0
+	second["pieces"][1]["on_table"] = true
+	second["pieces"][1]["cluster_id"] = 0
+	SaveManager.save(second, test_dir.path_join("b.json"))
+	var listed := SaveManager.list_puzzles(test_dir)
+	_check(listed.size() == 2, "two saves are listed side by side")
+	for info in listed:
+		_check(info.pieces == columns * rows and not info.complete, "summary reports piece total and completion")
+		if info.id == "b":
+			_check(info.joined == 2 and info.largest == 2, "summary counts joined pieces")
+		else:
+			_check(info.joined == 0, "untouched save has no joined pieces")
+	SaveManager.delete_save(test_dir.path_join("a.json"))
+	_check(SaveManager.list_puzzles(test_dir).size() == 1, "deleting one save leaves the other")
+	SaveManager.delete_save(test_dir.path_join("b.json"))
+
 	if failures == 0:
 		print("PERSISTENCE TEST PASSED: save/load round-trip, ownership stripped, corrupt file handled")
 	quit(0 if failures == 0 else 1)

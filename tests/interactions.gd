@@ -52,7 +52,7 @@ func _run() -> void:
 	var game: Node2D = scene.instantiate()
 	root.add_child(game)
 	game._hide_lobby()
-	game.size_picker.select(1)
+	game.grid_index = 1
 	game._set_rotation_enabled(false)
 	await process_frame
 	await process_frame

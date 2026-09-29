@@ -29,7 +29,7 @@ func _run() -> void:
 	_check(scene != null, "main scene loads")
 	var game := scene.instantiate()
 	root.add_child(game)
-	game.size_picker.select(1)
+	game.grid_index = 1
 	game._set_rotation_enabled(false)
 	await process_frame
 	await process_frame
@@ -189,7 +189,7 @@ func _run() -> void:
 	_check(game.bank.row.get_child_count() == 48, "reset restores bank")
 	_check(not game.bank.collapsed, "reset expands bank")
 	for size_index in [0, 2, 3]:
-		game.size_picker.select(size_index)
+		game.grid_index = size_index
 		game._start_puzzle(false)
 		var expected: int = game.columns * game.rows
 		_check(game.manager.pieces.size() == expected, "%d piece generation" % expected)

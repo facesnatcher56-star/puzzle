@@ -2,8 +2,15 @@ extends Node2D
 
 const SOURCE_IMAGE: Texture2D = preload("res://assets/emberbound.png")
 const PIECE_SCENE: PackedScene = preload("res://scenes/puzzle_piece.tscn")
-const BOARD_SIZE := Vector2(1122, 1402)
-const SIZES := [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(10, 25)]
+const BOARD_SIZE := Vector2(1122, 1402) # native size of the default (first) artwork
+const IMAGES := [
+	{"id": "emberbound", "name": "Emberbound", "path": "res://assets/emberbound.png"},
+	{"id": "restricted_facility", "name": "Restricted Facility", "path": "res://assets/restricted_facility.webp"},
+	{"id": "haunted_carnival", "name": "Haunted Carnival", "path": "res://assets/haunted_carnival.webp"},
+]
+# All artwork is normalised to the area of the original so piece size depends only on piece count.
+const REFERENCE_AREA := 1122.0 * 1402.0
+const SIZES := [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(13, 19)]
 
 @onready var camera: Camera2D = $Camera2D
 @onready var piece_layer: Node2D = $Pieces
@@ -32,6 +39,20 @@ var touch_panning := false
 var pinch_distance := 0.0
 var bank_scrolling := false
 var rotation_enabled := true
+var grid_index := 3
+# ID of the save file this session writes to. Empty for clients: a joined game belongs
+# to the host and must never be written to this device's puzzle list.
+var current_save_id := ""
+var pending_host_id := ""
+var hover_table_id := -1
+# BOARD_SIZE is the artwork's native size. Each puzzle's actual board (and the table drawn
+# around it) is scaled with its piece count so pieces stay roughly the same physical size.
+var board_scale := 1.0
+var board_size := BOARD_SIZE
+var image_id: String = IMAGES[0].id
+var settings := {}
+var base_scale := 1.0
+var lobby_in_game := false # true while the lobby overlay is acting as the in-game pause menu
 
 var network: NetworkSession
 var save_dirty := false
@@ -62,8 +83,9 @@ var reference_touch_index := -1
 var complete_banner: PanelContainer
 var complete_label: Label
 var rotation_button: Button
-var rotation_toggle: CheckButton
-var size_picker: OptionButton
+var progress_label: Label
+var confirm_dialog: ConfirmationDialog
+var pending_confirm := Callable()
 var top_hint: Label
 var network_status_label: Label
 var leave_button: Button
@@ -78,12 +100,16 @@ var join_status_label: Label
 
 func _ready() -> void:
 	_apply_mobile_scale()
+	settings = SettingsManager.load_settings()
+	SettingsManager.apply(settings, base_scale, get_window())
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	if source == null:
 		push_error("Bundled puzzle image failed to load: res://assets/emberbound.png")
 		return
 	manager.piece_changed.connect(_on_piece_changed)
 	manager.bank_changed.connect(func(): bank.refresh())
+	manager.bank_changed.connect(_update_progress)
+	manager.pieces_joined.connect(func(_id, _members): _update_progress())
 	manager.pieces_joined.connect(_on_pieces_joined)
 	manager.puzzle_completed.connect(_on_completed)
 	manager.piece_changed.connect(_mark_dirty.unbind(1))
@@ -106,21 +132,23 @@ func _ready() -> void:
 	autosave_timer.autostart = true
 	autosave_timer.timeout.connect(_on_autosave_tick)
 	add_child(autosave_timer)
+	var progress_timer := Timer.new()
+	progress_timer.wait_time = 1.0
+	progress_timer.autostart = true
+	progress_timer.timeout.connect(_update_progress)
+	add_child(progress_timer)
 	get_viewport().size_changed.connect(_on_viewport_resized)
 	_show_lobby()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
-		if reference_overlay != null and reference_overlay.visible:
-			reference_overlay.visible = false
-		elif lobby_overlay != null and lobby_overlay.visible and lobby_sub_open:
-			_build_lobby_root()
-		else:
-			get_tree().quit()
+		# Android back button: same as Esc, except it exits from the main menu.
+		if not _handle_back() and lobby_overlay.visible:
+			_exit_to_desktop()
 	elif what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		# Android may kill the app without a clean quit after backgrounding, and focus-out
 		# fires more reliably across OEM skins than the pause notification alone.
-		if network != null and (network.is_solo() or network.is_host()) and save_dirty:
+		if _can_save() and save_dirty:
 			_write_save()
 
 # Phones report a large pixel canvas, which shrinks the 1280x800 layout to unreadable
@@ -132,21 +160,25 @@ func _apply_mobile_scale() -> void:
 	var dpi := maxf(DisplayServer.screen_get_dpi(), 120)
 	var stretch := minf(screen.x / 1280.0, screen.y / 800.0)
 	var target_height := clampf(screen.y * 160.0 / dpi * 1.2, 500, 800)
-	get_window().content_scale_factor = maxf(1.0, screen.y / (stretch * target_height))
+	base_scale = maxf(1.0, screen.y / (stretch * target_height))
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2(-5000, -5000), Vector2(10000, 10000)), Color("293a3e"), true)
-	for x in range(-4800, 5000, 160):
-		draw_line(Vector2(x, -5000), Vector2(x, 5000), Color(1, 1, 1, 0.014), 1)
-	for y in range(-4800, 5000, 160):
-		draw_line(Vector2(-5000, y), Vector2(5000, y), Color(1, 1, 1, 0.014), 1)
-	var board := Rect2(-BOARD_SIZE * 0.5, BOARD_SIZE)
+	# The table grows with the puzzle: about 3.5 board-heights out in every direction.
+	var half := maxf(board_size.x, board_size.y) * 3.5
+	draw_rect(Rect2(Vector2(-half, -half), Vector2(half, half) * 2.0), Color("293a3e"), true)
+	var spacing := 160.0 * maxf(board_scale, 0.5)
+	for i in range(-int(half / spacing), int(half / spacing) + 1):
+		draw_line(Vector2(i * spacing, -half), Vector2(i * spacing, half), Color(1, 1, 1, 0.014), 1)
+		draw_line(Vector2(-half, i * spacing), Vector2(half, i * spacing), Color(1, 1, 1, 0.014), 1)
+	var board := Rect2(-board_size * 0.5, board_size)
 	draw_rect(board.grow(17), Color(0.05, 0.08, 0.09, 0.45), true)
 	draw_rect(board.grow(7), Color("ab9e83"), true)
 	draw_rect(board, Color("637374"), true)
 	draw_rect(board, Color("d5c8aa"), false, 3)
 
 func _start_puzzle(new_seed: bool) -> void:
+	if network != null and network.is_client():
+		return
 	if new_seed:
 		seed_value += 1
 	for child in piece_layer.get_children():
@@ -158,11 +190,11 @@ func _start_puzzle(new_seed: bool) -> void:
 	bank_press_id = -1
 	_hide_preview()
 	_clear_ghost()
-	var grid: Vector2i = SIZES[size_picker.selected]
+	var grid := _grid_for(grid_index, source)
 	columns = grid.x
 	rows = grid.y
-	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
+	_set_board_scale(_scale_for_grid(columns, rows))
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
 	if generated.size() != columns * rows:
 		push_error("Puzzle generation failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -177,10 +209,55 @@ func _start_puzzle(new_seed: bool) -> void:
 		network.broadcast_full_state()
 	_mark_dirty()
 
+# Piece area stays roughly constant across puzzle sizes: a 96-piece puzzle uses the
+# artwork at native size, smaller counts shrink the board, larger counts grow it.
+func _scale_for_grid(grid_columns: int, grid_rows: int) -> float:
+	var native := source.get_size()
+	return sqrt(grid_columns * grid_rows / 96.0) * sqrt(REFERENCE_AREA / (native.x * native.y))
+
+# SIZES are written for portrait artwork; landscape artwork gets the transposed grid.
+func _grid_for(index: int, texture: Texture2D) -> Vector2i:
+	var grid: Vector2i = SIZES[index]
+	var native := texture.get_size()
+	return Vector2i(grid.y, grid.x) if native.x > native.y else grid
+
+func _grid_index_of(grid_columns: int, grid_rows: int) -> int:
+	var index := SIZES.find(Vector2i(grid_columns, grid_rows))
+	return index if index >= 0 else SIZES.find(Vector2i(grid_rows, grid_columns))
+
+func _image_info(id: String) -> Dictionary:
+	for info in IMAGES:
+		if info.id == id:
+			return info
+	return IMAGES[0]
+
+func _image_texture(id: String) -> Texture2D:
+	return load(_image_info(id).path)
+
+# Switches the artwork used by the table, bank and reference window.
+func _use_image(id: String) -> void:
+	var info := _image_info(id)
+	var texture := _image_texture(info.id)
+	if texture == null:
+		push_error("Puzzle image failed to load: %s" % info.path)
+		return
+	image_id = info.id
+	source = texture
+	if reference_image_view != null:
+		reference_image_view.texture = source
+		reference_zoom = 1.0
+		_update_reference_image_layout()
+		_clamp_reference_pan()
+
+func _set_board_scale(value: float) -> void:
+	board_scale = value
+	board_size = source.get_size() * value
+	cell = Vector2(board_size.x / columns, board_size.y / rows)
+
 func _fit_camera() -> void:
 	var viewport_size := get_viewport_rect().size
 	var available := Vector2(viewport_size.x - 64, viewport_size.y - bank.bank_height - 85)
-	var fit := minf(available.x / BOARD_SIZE.x, available.y / BOARD_SIZE.y)
+	var fit := minf(available.x / board_size.x, available.y / board_size.y)
 	camera.zoom = Vector2.ONE * fit
 	camera.position = Vector2(0, (bank.bank_height - 53) * 0.5 / fit)
 
@@ -208,29 +285,17 @@ func _build_ui() -> void:
 	title.add_theme_color_override("font_color", Color("f4e5c3"))
 	title.custom_minimum_size.x = 180
 	top.add_child(title)
-	var size_label := Label.new()
-	size_label.text = "PIECES"
-	size_label.add_theme_font_size_override("font_size", 12)
-	top.add_child(size_label)
-	size_picker = OptionButton.new()
-	size_picker.focus_mode = Control.FOCUS_NONE
-	for grid in SIZES:
-		size_picker.add_item(str(grid.x * grid.y))
-	size_picker.select(3)
-	size_picker.item_selected.connect(func(_index: int): _start_puzzle(false))
-	top.add_child(size_picker)
-	rotation_toggle = CheckButton.new()
-	rotation_toggle.text = "Rotation"
-	rotation_toggle.button_pressed = rotation_enabled
-	rotation_toggle.tooltip_text = "Random quarter-turns. Changing this restarts the puzzle."
-	rotation_toggle.focus_mode = Control.FOCUS_NONE
-	rotation_toggle.toggled.connect(_set_rotation_enabled)
-	top.add_child(rotation_toggle)
 	rotation_button = Button.new()
 	rotation_button.text = "↻ Rotate (R)"
+	rotation_button.tooltip_text = "Shift+R or Q rotates the other way"
 	rotation_button.visible = rotation_enabled
+	rotation_button.focus_mode = Control.FOCUS_NONE
 	rotation_button.pressed.connect(_rotate_selected)
 	top.add_child(rotation_button)
+	progress_label = Label.new()
+	progress_label.add_theme_font_size_override("font_size", 13)
+	progress_label.add_theme_color_override("font_color", Color("f3dba4"))
+	top.add_child(progress_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(spacer)
@@ -248,8 +313,7 @@ func _build_ui() -> void:
 	network_status_label.add_theme_color_override("font_color", Color("9fd6c8"))
 	top.add_child(network_status_label)
 	leave_button = Button.new()
-	leave_button.text = "Leave"
-	leave_button.visible = false
+	leave_button.text = "Menu"
 	leave_button.focus_mode = Control.FOCUS_NONE
 	leave_button.pressed.connect(_on_leave_pressed)
 	top.add_child(leave_button)
@@ -284,9 +348,12 @@ func _build_ui() -> void:
 	restart.pressed.connect(func(): _start_puzzle(false))
 	complete_row.add_child(restart)
 	var next := Button.new()
-	next.text = "New puzzle"
-	next.pressed.connect(func(): _start_puzzle(true))
+	next.text = "Puzzles"
+	next.pressed.connect(_on_leave_pressed)
 	complete_row.add_child(next)
+	confirm_dialog = ConfirmationDialog.new()
+	confirm_dialog.confirmed.connect(func(): pending_confirm.call())
+	ui_root.add_child(confirm_dialog)
 	_build_reference()
 
 # The reference window is a non-modal floating panel: laid out manually (not via
@@ -365,11 +432,164 @@ func _build_lobby_ui() -> void:
 	_build_lobby_root()
 
 func _show_lobby() -> void:
+	lobby_in_game = false
 	_build_lobby_root()
 	lobby_overlay.visible = true
 
 func _hide_lobby() -> void:
+	lobby_in_game = false
 	lobby_overlay.visible = false
+
+# Esc / Android back. Returns true if it did something.
+func _handle_back() -> bool:
+	if reference_overlay != null and reference_overlay.visible:
+		reference_overlay.visible = false
+		return true
+	if lobby_overlay.visible:
+		if lobby_in_game:
+			if lobby_sub_open:
+				_build_pause_root()
+			else:
+				_hide_lobby()
+			return true
+		if lobby_sub_open:
+			_build_lobby_root()
+			return true
+		return false
+	_show_pause()
+	return true
+
+func _show_pause() -> void:
+	lobby_in_game = true
+	_release_input_state()
+	_build_pause_root()
+	lobby_overlay.visible = true
+
+# Drops any drag/press in progress so nothing is left held when a menu covers the table.
+func _release_input_state() -> void:
+	if dragging_table_id >= 0:
+		network.request_release(dragging_table_id)
+		_set_cluster_z(dragging_table_id, 0)
+		dragging_table_id = -1
+	bank_press_id = -1
+	bank_dragging = false
+	mouse_panning = false
+	resizing_bank = false
+	_clear_ghost()
+	_hide_preview()
+
+func _build_pause_root() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = false
+	var title := Label.new()
+	title.text = "PAUSED"
+	title.add_theme_font_size_override("font_size", 20)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(title)
+	var resume := Button.new()
+	resume.text = "Resume"
+	resume.pressed.connect(_hide_lobby)
+	lobby_stack.add_child(resume)
+	var settings_button := Button.new()
+	settings_button.text = "Settings"
+	settings_button.pressed.connect(_build_lobby_settings)
+	lobby_stack.add_child(settings_button)
+	var menu := Button.new()
+	menu.text = "Leave Game" if network.is_client() else "Save & Main Menu"
+	menu.pressed.connect(_on_leave_pressed)
+	lobby_stack.add_child(menu)
+	var quit := Button.new()
+	quit.text = "Exit to Desktop"
+	quit.pressed.connect(_exit_to_desktop)
+	lobby_stack.add_child(quit)
+
+# Saves first (never for a client, whose game belongs to the host), then quits.
+func _exit_to_desktop() -> void:
+	if _can_save():
+		_write_save()
+	get_tree().quit()
+
+func _build_lobby_settings() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var title := Label.new()
+	title.text = "SETTINGS"
+	title.add_theme_font_size_override("font_size", 18)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(title)
+	if not OS.has_feature("mobile"):
+		var fullscreen := bool(settings.fullscreen)
+		var mode_picker := OptionButton.new()
+		mode_picker.add_item("Windowed")
+		mode_picker.add_item("Fullscreen")
+		mode_picker.select(1 if fullscreen else 0)
+		mode_picker.item_selected.connect(func(index: int):
+			_apply_setting("fullscreen", index == 1)
+			_build_lobby_settings())
+		lobby_stack.add_child(_settings_row("Display mode", mode_picker))
+		var resolutions := SettingsManager.available_resolutions()
+		var res_picker := OptionButton.new()
+		var current := DisplayServer.window_get_size()
+		var selected := -1
+		for i in range(resolutions.size()):
+			var res: Vector2i = resolutions[i]
+			res_picker.add_item("%d x %d" % [res.x, res.y])
+			if res == current:
+				selected = i
+		res_picker.select(selected)
+		res_picker.disabled = fullscreen
+		res_picker.item_selected.connect(func(index: int):
+			var res: Vector2i = resolutions[index]
+			_apply_setting("resolution", [res.x, res.y]))
+		lobby_stack.add_child(_settings_row("Window resolution", res_picker))
+		var vsync := CheckButton.new()
+		vsync.button_pressed = bool(settings.vsync)
+		vsync.toggled.connect(func(on: bool): _apply_setting("vsync", on))
+		lobby_stack.add_child(_settings_row("VSync", vsync))
+	var scale_row := HBoxContainer.new()
+	scale_row.add_theme_constant_override("separation", 6)
+	var scale_value := Label.new()
+	scale_value.text = "%d%%" % roundi(float(settings.ui_scale) * 100.0)
+	scale_value.custom_minimum_size.x = 56
+	scale_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var smaller := Button.new()
+	smaller.text = "−"
+	var larger := Button.new()
+	larger.text = "+"
+	for step_button in [smaller, larger]:
+		var delta := -0.1 if step_button == smaller else 0.1
+		step_button.pressed.connect(func():
+			_apply_setting("ui_scale", clampf(snappedf(float(settings.ui_scale) + delta, 0.05), 0.7, 1.6))
+			scale_value.text = "%d%%" % roundi(float(settings.ui_scale) * 100.0))
+	scale_row.add_child(smaller)
+	scale_row.add_child(scale_value)
+	scale_row.add_child(larger)
+	lobby_stack.add_child(_settings_row("Interface size", scale_row))
+	if OS.has_feature("mobile"):
+		var awake := CheckButton.new()
+		awake.button_pressed = bool(settings.keep_awake)
+		awake.toggled.connect(func(on: bool): _apply_setting("keep_awake", on))
+		lobby_stack.add_child(_settings_row("Keep screen on", awake))
+	var back := Button.new()
+	back.text = "Back"
+	back.pressed.connect(_build_pause_root if lobby_in_game else _build_lobby_root)
+	lobby_stack.add_child(back)
+
+func _settings_row(label_text: String, control: Control) -> Control:
+	var row := HBoxContainer.new()
+	var label := Label.new()
+	label.text = label_text
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(label)
+	row.add_child(control)
+	return row
+
+func _apply_setting(key: String, value) -> void:
+	settings[key] = value
+	SettingsManager.save_settings(settings)
+	SettingsManager.apply(settings, base_scale, get_window())
+	if key in ["fullscreen", "resolution", "ui_scale"] and not manager.pieces.is_empty():
+		_fit_camera.call_deferred()
 
 func _clear_lobby_stack() -> void:
 	for child in lobby_stack.get_children():
@@ -384,23 +604,184 @@ func _build_lobby_root() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lobby_stack.add_child(title)
-	if SaveManager.has_save():
-		var hint := Label.new()
-		hint.text = "A puzzle in progress will resume automatically."
-		hint.autowrap_mode = TextServer.AUTOWRAP_WORD
-		lobby_stack.add_child(hint)
 	var solo_button := Button.new()
 	solo_button.text = "Play Solo"
-	solo_button.pressed.connect(_on_solo_pressed)
+	solo_button.pressed.connect(_build_lobby_puzzles.bind("solo"))
 	lobby_stack.add_child(solo_button)
 	var host_button := Button.new()
 	host_button.text = "Host Game"
-	host_button.pressed.connect(_build_lobby_host)
+	host_button.pressed.connect(_build_lobby_puzzles.bind("host"))
 	lobby_stack.add_child(host_button)
 	var join_button := Button.new()
 	join_button.text = "Join Game"
 	join_button.pressed.connect(_build_lobby_join)
 	lobby_stack.add_child(join_button)
+	var settings_button := Button.new()
+	settings_button.text = "Settings"
+	settings_button.pressed.connect(_build_lobby_settings)
+	lobby_stack.add_child(settings_button)
+	var quit_button := Button.new()
+	quit_button.text = "Exit to Desktop"
+	quit_button.pressed.connect(_exit_to_desktop)
+	lobby_stack.add_child(quit_button)
+
+func _format_duration(ms: int) -> String:
+	var seconds := ms / 1000
+	if seconds >= 3600:
+		return "%d:%02d:%02d" % [seconds / 3600, (seconds % 3600) / 60, seconds % 60]
+	return "%02d:%02d" % [seconds / 60, seconds % 60]
+
+# Destructive lobby buttons need a second press within a few seconds.
+func _two_step_button(label: String, action: Callable) -> Button:
+	var button := Button.new()
+	button.text = label
+	button.pressed.connect(func():
+		if button.text == label:
+			button.text = "Sure?"
+			get_tree().create_timer(3.0).timeout.connect(func():
+				if is_instance_valid(button):
+					button.text = label)
+		else:
+			action.call())
+	return button
+
+func _build_lobby_puzzles(mode: String) -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var title := Label.new()
+	title.text = "CHOOSE A PUZZLE TO HOST" if mode == "host" else "YOUR PUZZLES"
+	title.add_theme_font_size_override("font_size", 18)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(title)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(560, 240)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	lobby_stack.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 8)
+	scroll.add_child(list)
+	var puzzles := SaveManager.list_puzzles()
+	if puzzles.is_empty():
+		var empty := Label.new()
+		empty.text = "No puzzles in progress yet. Start a new one!"
+		list.add_child(empty)
+	for info in puzzles:
+		list.add_child(_build_puzzle_row(info, mode))
+	var new_button := Button.new()
+	new_button.text = "New Puzzle"
+	new_button.pressed.connect(_build_lobby_new.bind(mode))
+	lobby_stack.add_child(new_button)
+	var back := Button.new()
+	back.text = "Back"
+	back.pressed.connect(_build_lobby_root)
+	lobby_stack.add_child(back)
+
+func _build_puzzle_row(info: Dictionary, mode: String) -> Control:
+	var id: String = info.id
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var label := Label.new()
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	var status := "Complete!" if info.complete else "%d%% joined" % roundi(100.0 * info.joined / maxi(1, info.pieces))
+	var played := Time.get_datetime_string_from_unix_time(info.saved_at, true).substr(0, 16)
+	label.text = "%s  •  %d pieces%s\n%s  •  %s  •  %s" % [_image_info(info.image).name, info.pieces, "  •  rotation" if info.rotation_enabled else "", status, _format_duration(info.elapsed_ms), played]
+	row.add_child(label)
+	var play := Button.new()
+	play.text = "Host" if mode == "host" else "Play"
+	play.pressed.connect(_on_puzzle_chosen.bind(id, mode))
+	row.add_child(play)
+	row.add_child(_two_step_button("Reset", func():
+		_reset_saved_puzzle(id)
+		_build_lobby_puzzles(mode)))
+	row.add_child(_two_step_button("Delete", func():
+		SaveManager.delete_puzzle(id)
+		_build_lobby_puzzles(mode)))
+	return row
+
+func _on_puzzle_chosen(id: String, mode: String) -> void:
+	if mode == "host":
+		pending_host_id = id
+		_build_lobby_host()
+	elif _open_puzzle(id):
+		_hide_lobby()
+
+func _build_lobby_new(mode: String) -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var title := Label.new()
+	title.text = "NEW PUZZLE"
+	title.add_theme_font_size_override("font_size", 18)
+	lobby_stack.add_child(title)
+	var image_picker := OptionButton.new()
+	for info in IMAGES:
+		image_picker.add_item(info.name)
+	image_picker.select(maxi(0, IMAGES.map(func(info): return info.id).find(image_id)))
+	lobby_stack.add_child(_settings_row("Picture", image_picker))
+	var count_row := HBoxContainer.new()
+	lobby_stack.add_child(count_row)
+	var count_label := Label.new()
+	count_label.text = "Pieces"
+	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	count_row.add_child(count_label)
+	var count_picker := OptionButton.new()
+	for grid in SIZES:
+		count_picker.add_item(str(grid.x * grid.y))
+	count_picker.select(grid_index)
+	count_row.add_child(count_picker)
+	var rotation_check := CheckButton.new()
+	rotation_check.text = "Rotation (random quarter-turns)"
+	rotation_check.button_pressed = rotation_enabled
+	lobby_stack.add_child(rotation_check)
+	var create := Button.new()
+	create.text = "Create"
+	create.pressed.connect(func(): _create_puzzle(mode, count_picker.selected, rotation_check.button_pressed, IMAGES[image_picker.selected].id))
+	lobby_stack.add_child(create)
+	var back := Button.new()
+	back.text = "Back"
+	back.pressed.connect(_build_lobby_puzzles.bind(mode))
+	lobby_stack.add_child(back)
+
+func _create_puzzle(mode: String, index: int, rotation: bool, picture_id: String) -> void:
+	_use_image(picture_id)
+	grid_index = index
+	rotation_enabled = rotation
+	rotation_button.visible = rotation
+	seed_value = randi_range(1000, 900000)
+	current_save_id = SaveManager.new_id()
+	_start_puzzle(false)
+	_write_save()
+	if mode == "host":
+		pending_host_id = current_save_id
+		current_save_id = "" # nothing is saved until the host session actually starts
+		_build_lobby_host()
+	else:
+		_hide_lobby()
+
+func _open_puzzle(id: String) -> bool:
+	var saved := SaveManager.load_puzzle(id)
+	if saved.is_empty():
+		return false
+	current_save_id = id
+	_restore_puzzle(saved)
+	save_dirty = false
+	last_saved_msec = Time.get_ticks_msec()
+	return true
+
+# Clears all progress but keeps the puzzle's seed, size and rotation setting.
+func _reset_saved_puzzle(id: String) -> void:
+	var saved := SaveManager.load_puzzle(id)
+	if saved.is_empty():
+		return
+	var texture := _image_texture(str(saved.get("image", IMAGES[0].id)))
+	var fresh := PuzzleGenerator.generate(texture, int(saved.columns), int(saved.rows), int(saved.seed_value), texture.get_size() * float(saved.get("board_scale", 1.0)), bool(saved.rotation_enabled))
+	var snapshots := []
+	for piece in fresh:
+		snapshots.append(piece.snapshot())
+	saved["pieces"] = snapshots
+	saved["elapsed_ms"] = 0
+	SaveManager.save_puzzle(id, saved)
 
 func _build_lobby_host() -> void:
 	_clear_lobby_stack()
@@ -428,7 +809,7 @@ func _build_lobby_host() -> void:
 	lobby_stack.add_child(host_status_label)
 	var back := Button.new()
 	back.text = "Back"
-	back.pressed.connect(_build_lobby_root)
+	back.pressed.connect(_build_lobby_puzzles.bind("host"))
 	lobby_stack.add_child(back)
 
 func _build_lobby_join() -> void:
@@ -453,10 +834,6 @@ func _build_lobby_join() -> void:
 	back.pressed.connect(_build_lobby_root)
 	lobby_stack.add_child(back)
 
-func _on_solo_pressed() -> void:
-	_hide_lobby()
-	_begin_local_session()
-
 func _on_start_hosting_pressed() -> void:
 	var port := int(host_port_field.text)
 	if port <= 0 or port > 65535:
@@ -466,8 +843,11 @@ func _on_start_hosting_pressed() -> void:
 	if err != OK:
 		host_status_label.text = "Could not start hosting (error %d). Is the port already in use?" % err
 		return
+	if not _open_puzzle(pending_host_id):
+		network.stop()
+		host_status_label.text = "That puzzle's save could not be read. Go back and pick another."
+		return
 	_hide_lobby()
-	_begin_local_session()
 	_update_network_status()
 
 func _on_connect_pressed() -> void:
@@ -487,17 +867,24 @@ func _on_connect_pressed() -> void:
 		return
 	join_status_label.text = "Connecting..."
 
-func _begin_local_session() -> void:
-	var saved := SaveManager.load_state()
-	if not saved.is_empty():
-		_restore_puzzle(saved)
-	else:
-		_start_puzzle(false)
+func _can_save() -> bool:
+	return network != null and not network.is_client() and current_save_id != ""
 
+# Leaving the table flushes the current puzzle, then detaches the session from its save
+# file so nothing shown behind the menu (or received as a client) can be written later.
 func _on_leave_pressed() -> void:
-	network.stop()
+	_release_session()
 	_update_network_status()
 	_show_lobby()
+
+func _release_session() -> void:
+	if _can_save() and save_dirty:
+		_write_save()
+	network.stop()
+	current_save_id = ""
+	save_dirty = false
+	dragging_table_id = -1
+	touch_table_id = -1
 
 func _on_peer_joined(_id: int) -> void:
 	_update_network_status()
@@ -513,16 +900,21 @@ func _on_connection_failed(reason: String) -> void:
 		join_status_label.text = "%s — check the address/port and that the host's router is forwarding UDP." % reason
 
 func _on_server_disconnected() -> void:
-	_apply_role_restrictions()
+	current_save_id = ""
+	save_dirty = false
+	network.stop()
+	_update_network_status()
 	_show_lobby()
-	if join_status_label != null:
+	if is_instance_valid(join_status_label):
 		join_status_label.text = "Disconnected from host."
 
 func _on_full_state_received(config: Dictionary, snapshots: Array) -> void:
 	var saved := config.duplicate()
 	saved["pieces"] = snapshots
+	current_save_id = "" # the host's puzzle is never written to this device
 	_hide_lobby()
 	_restore_puzzle(saved)
+	save_dirty = false
 	_update_network_status()
 
 func _update_network_status() -> void:
@@ -534,18 +926,14 @@ func _update_network_status() -> void:
 		leave_button.visible = true
 	else:
 		network_status_label.text = "SOLO"
-		leave_button.visible = false
-	_apply_role_restrictions()
-
-func _apply_role_restrictions() -> void:
-	var editable := not network.is_client()
-	size_picker.disabled = not editable
-	rotation_toggle.disabled = not editable
+		leave_button.visible = true
+	leave_button.text = "Menu" if network.is_solo() else "Leave"
+	_update_progress()
 
 func _puzzle_config() -> Dictionary:
 	return {
 		"seed_value": seed_value, "columns": columns, "rows": rows,
-		"rotation_enabled": rotation_enabled,
+		"rotation_enabled": rotation_enabled, "board_scale": board_scale, "image": image_id,
 		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
 	}
 
@@ -563,13 +951,14 @@ func _restore_puzzle(saved: Dictionary) -> void:
 	columns = int(saved.columns)
 	rows = int(saved.rows)
 	rotation_enabled = bool(saved.rotation_enabled)
-	rotation_toggle.button_pressed = rotation_enabled
 	rotation_button.visible = rotation_enabled
-	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
-	var size_index := SIZES.find(Vector2i(columns, rows))
+	# Saves from before per-size boards have no board_scale and used the native artwork size.
+	_use_image(str(saved.get("image", IMAGES[0].id)))
+	_set_board_scale(float(saved.get("board_scale", 1.0)))
+	var size_index := _grid_index_of(columns, rows)
 	if size_index >= 0:
-		size_picker.select(size_index)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
+		grid_index = size_index
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
 	if generated.size() != columns * rows:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -583,7 +972,7 @@ func _restore_puzzle(saved: Dictionary) -> void:
 	if manager.completion_announced:
 		var seconds := manager.elapsed_seconds()
 		complete_label.text = "Puzzle Complete  •  %02d:%02d" % [seconds / 60, seconds % 60]
-	_apply_role_restrictions()
+	_update_progress()
 	_fit_camera()
 	queue_redraw()
 
@@ -592,13 +981,15 @@ func _mark_dirty() -> void:
 	last_change_msec = Time.get_ticks_msec()
 
 func _on_autosave_tick() -> void:
-	if not save_dirty or not (network.is_solo() or network.is_host()):
+	if not save_dirty or not _can_save():
 		return
 	var now := Time.get_ticks_msec()
 	if now - last_change_msec >= 1500 or now - last_saved_msec >= 15000:
 		_write_save()
 
 func _write_save() -> void:
+	if not _can_save():
+		return
 	var piece_snapshots := []
 	for piece in manager.pieces:
 		var snap := piece.snapshot()
@@ -606,9 +997,20 @@ func _write_save() -> void:
 		piece_snapshots.append(snap)
 	var data := _puzzle_config()
 	data["pieces"] = piece_snapshots
-	SaveManager.save(data)
+	# Keep the original creation time across rewrites.
+	var existing := SaveManager.load_puzzle(current_save_id)
+	if existing.has("created_at"):
+		data["created_at"] = existing.created_at
+	SaveManager.save_puzzle(current_save_id, data)
 	save_dirty = false
 	last_saved_msec = Time.get_ticks_msec()
+
+func _update_progress() -> void:
+	if progress_label == null or manager.pieces.is_empty():
+		return
+	var total := manager.pieces.size()
+	var seconds := manager.elapsed_seconds()
+	progress_label.text = "Placed %d/%d  •  Largest group %d  •  %s" % [manager.table_count(), total, manager.completed_count(), _format_duration(seconds * 1000)]
 
 func _on_viewport_resized() -> void:
 	_layout_reference()
@@ -760,15 +1162,23 @@ func _on_bank_action(action: String) -> void:
 	elif action == "spread":
 		_spread_table_pieces()
 	elif action == "reset":
-		_start_puzzle(false)
+		_confirm_if_progress("Restart this puzzle? All progress on it will be cleared.", func(): _start_puzzle(false))
 	elif action == "new":
-		_start_puzzle(true)
+		_confirm_if_progress("Replace this puzzle with a new one of the same size? Current progress will be lost.", func(): _start_puzzle(true))
 	elif action == "reference":
 		reference_overlay.visible = true
 		_hide_preview()
 	elif action == "collapse":
 		bank.toggle_collapsed()
 		_hide_preview()
+
+func _confirm_if_progress(text: String, action: Callable) -> void:
+	if manager.table_count() == 0 or manager.completion_announced:
+		action.call()
+		return
+	pending_confirm = action
+	confirm_dialog.dialog_text = text
+	confirm_dialog.popup_centered()
 
 func _on_bank_hovered(piece_id: int, screen_position: Vector2) -> void:
 	_show_preview(piece_id, screen_position)
@@ -785,9 +1195,34 @@ func _on_bank_pressed(piece_id: int, screen_position: Vector2) -> void:
 	bank_dragging = false
 	_show_preview(piece_id, screen_position)
 
-func _show_preview(piece_id: int, screen_position: Vector2) -> void:
+# Hovering a piece on the table shows the same magnified detail popup as the bank does.
+func _update_table_hover(screen_position: Vector2) -> void:
+	var hovered := -1
+	if not lobby_overlay.visible and _is_table_screen(screen_position) \
+			and not (reference_overlay.visible and _reference_window_rect().has_point(screen_position)):
+		hovered = _pick_table_piece(_screen_to_world(screen_position))
+	if hovered == hover_table_id:
+		if hovered >= 0:
+			_position_table_preview(screen_position)
+		return
+	if hover_table_id >= 0 or hovered >= 0:
+		_hide_preview()
+	if hovered >= 0:
+		_show_preview(hovered, screen_position, true)
+		hover_table_id = hovered
+
+# Sits beside the cursor (flipping sides near the screen edge) so it never covers the piece.
+func _position_table_preview(screen_position: Vector2) -> void:
+	var viewport_size := get_viewport_rect().size
+	var x := screen_position.x + 30
+	if x + preview_panel.size.x > viewport_size.x - 8:
+		x = screen_position.x - 30 - preview_panel.size.x
+	var y := clampf(screen_position.y - preview_panel.size.y * 0.5, 58, maxf(58, viewport_size.y - preview_panel.size.y - 8))
+	preview_panel.position = Vector2(maxf(8, x), y)
+
+func _show_preview(piece_id: int, screen_position: Vector2, on_table: bool = false) -> void:
 	var piece := manager.get_piece(piece_id)
-	if piece == null or piece.is_on_table:
+	if piece == null or piece.is_on_table != on_table:
 		return
 	if preview_view != null:
 		preview_view.queue_free()
@@ -797,11 +1232,15 @@ func _show_preview(piece_id: int, screen_position: Vector2) -> void:
 	var factor := minf(213.0 / piece.piece_size.x, 213.0 / piece.piece_size.y)
 	preview_view.place_centered(Vector2(139, 121), factor)
 	var width := get_viewport_rect().size.x
-	preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
+	if on_table:
+		_position_table_preview(screen_position)
+	else:
+		preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
 	preview_panel.visible = true
 	preview_panel.move_to_front()
 
 func _hide_preview() -> void:
+	hover_table_id = -1
 	if preview_panel:
 		preview_panel.visible = false
 	if preview_view:
@@ -851,9 +1290,11 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
-			reference_overlay.visible = false
+			_handle_back()
 		elif event.keycode == KEY_R and rotation_enabled:
-			_rotate_selected()
+			_rotate_selected(-1 if event.shift_pressed else 1)
+		elif event.keycode == KEY_Q and rotation_enabled:
+			_rotate_selected(-1)
 	if lobby_overlay.visible:
 		return
 	if event is InputEventMagnifyGesture:
@@ -869,6 +1310,8 @@ func _input(event: InputEvent) -> void:
 		_handle_touch_drag(event)
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
+	if event.pressed and hover_table_id >= 0:
+		_hide_preview() # clicking, dragging or zooming moves pieces out from under the popup
 	if _handle_reference_mouse_button(event):
 		return
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed and _is_table_screen(event.position):
@@ -947,6 +1390,8 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 		camera.position -= event.relative / camera.zoom.x
 	elif dragging_table_id >= 0:
 		network.request_move(dragging_table_id, _screen_to_world(event.position) - drag_offset)
+	elif not resizing_bank:
+		_update_table_hover(event.position)
 
 func _handle_touch(event: InputEventScreenTouch) -> void:
 	if event.pressed:
@@ -1123,19 +1568,21 @@ func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 			view.modulate = Color(1.18, 1.10, 0.85)
 			create_tween().tween_property(view, "modulate", Color.WHITE, 0.28)
 
-func _rotate_selected() -> void:
+func _rotate_selected(direction: int = 1) -> void:
 	if rotation_enabled and selected_table_id >= 0:
-		network.request_rotate(selected_table_id)
+		# Only clockwise is a network primitive; counter-clockwise is three quarter-turns.
+		for i in range(1 if direction >= 0 else 3):
+			network.request_rotate(selected_table_id)
 
 func _spread_table_pieces() -> void:
 	var group_ids := manager.clusters.keys()
 	if group_ids.is_empty():
 		return
 	group_ids.sort()
-	var origin := Vector2(BOARD_SIZE.x * 0.62, -BOARD_SIZE.y * 0.42)
+	var origin := Vector2(board_size.x * 0.62, -board_size.y * 0.42)
 	var cursor := origin
 	var row_height := 0.0
-	var available_width := BOARD_SIZE.x * 1.7
+	var available_width := board_size.x * 1.7
 	var gap := minf(cell.x, cell.y) * 0.72
 	for group_id in group_ids:
 		var members: Array = manager.clusters[group_id]

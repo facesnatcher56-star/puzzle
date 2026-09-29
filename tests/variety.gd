@@ -16,11 +16,11 @@ func _run() -> void:
 	game._hide_lobby()
 	game._start_puzzle(false)
 	await process_frame
-	_check(game.manager.pieces.size() == 250, "Default puzzle has 250 pieces")
+	_check(game.manager.pieces.size() == 247, "Default puzzle has 247 pieces")
 	_check(game.rotation_enabled, "Rotation starts enabled")
 	_check(game.source.get_size() == Vector2(1122, 1402), "Original artwork resolution preserved")
 	_check(game.BOARD_SIZE == game.source.get_size(), "Board preserves full image proportions")
-	_check(game.columns == 10 and game.rows == 25, "250-piece grid fits portrait artwork")
+	_check(game.columns == 13 and game.rows == 19, "247-piece grid fits portrait artwork")
 	var rotations := {}
 	for piece in game.manager.pieces:
 		rotations[piece.current_rotation] = true
@@ -55,17 +55,31 @@ func _run() -> void:
 				_check(edge.size() == other.size(), "Matching seam lengths")
 				for i in range(edge.size()):
 					_check((piece.correct_position + edge[i]).distance_to(neighbor.correct_position + other[other.size() - i - 1]) < 0.001, "Matching seam coordinates")
-	# Solve all 250 pieces after correcting their random starting rotations.
+	# Solve all 247 pieces after correcting their random starting rotations.
 	game._start_puzzle(false)
 	for piece in game.manager.pieces:
 		game.manager.request_place_from_bank(piece.piece_id, piece.correct_position)
 		while piece.current_rotation != 0:
 			game.manager.request_rotate(piece.piece_id)
 		game.manager.request_release(piece.piece_id)
-	_check(game.manager.completed_count() == 250 and game.complete_banner.visible, "250-piece puzzle completes after rotation and joining")
+	_check(game.manager.completed_count() == 247 and game.complete_banner.visible, "247-piece puzzle completes after rotation and joining")
 	game._set_rotation_enabled(false)
 	for piece in game.manager.pieces:
 		_check(piece.current_rotation == 0, "Disabling rotation starts upright puzzle")
+	# Second (landscape) picture: transposed grid, same piece area, image round-trips through config.
+	game._use_image("restricted_facility")
+	game.grid_index = 3
+	game._start_puzzle(false)
+	_check(game.columns == 19 and game.rows == 13 and game.manager.pieces.size() == 247, "landscape picture uses the transposed 19x13 grid")
+	_check(game.source.get_size() == Vector2(1448, 1086), "second picture loads at native size")
+	var portrait_piece_area: float = 0.0
+	game._use_image("emberbound")
+	game._start_puzzle(false)
+	portrait_piece_area = game.cell.x * game.cell.y
+	game._use_image("restricted_facility")
+	game._start_puzzle(false)
+	_check(absf(game.cell.x * game.cell.y / portrait_piece_area - 1.0) < 0.01, "piece area matches across pictures")
+	_check(game._puzzle_config().image == "restricted_facility", "config records the picture")
 	if failures == 0:
-		print("VARIETY TEST PASSED: 250 pieces, rotations across all views, 20 seeds, complementary seams, full completion")
+		print("VARIETY TEST PASSED: 247 pieces, rotations across all views, 20 seeds, complementary seams, full completion")
 	quit(0 if failures == 0 else 1)
