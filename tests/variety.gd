@@ -13,6 +13,8 @@ func _check(ok: bool, message: String) -> void:
 func _run() -> void:
 	var game = load("res://scenes/main.tscn").instantiate()
 	root.add_child(game)
+	game._hide_lobby()
+	game._start_puzzle(false)
 	await process_frame
 	_check(game.manager.pieces.size() == 250, "Default puzzle has 250 pieces")
 	_check(game.rotation_enabled, "Rotation starts enabled")
@@ -34,7 +36,7 @@ func _run() -> void:
 	game._place_bank_piece(item.piece_id, Vector2(500, 300))
 	var view: PuzzlePieceView = game.table_views[item.piece_id]
 	_check(is_equal_approx(view.rotation_degrees, view.data.current_rotation), "Table placement retains rotation")
-	_check(view.hit_test(view.data.current_position + game.cell * 0.5), "Rotated piece remains selectable")
+	_check(view.hit_test(view.data.current_position + view.data.piece_size * 0.5), "Rotated piece remains selectable")
 	var before_rotation: int = view.data.current_rotation
 	game._rotate_selected()
 	_check(view.data.current_rotation == (before_rotation + 90) % 360 and is_equal_approx(view.rotation_degrees, view.data.current_rotation), "Rotate control updates state and view")

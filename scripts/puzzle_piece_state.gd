@@ -7,6 +7,9 @@ var row: int
 var column: int
 var correct_position: Vector2
 var current_position: Vector2
+# This piece's own width/height -- pieces are no longer all identical, so any code
+# that used to assume a single board-wide cell size must use this instead.
+var piece_size: Vector2 = Vector2.ONE
 var correct_rotation: int = 0
 var current_rotation: int = 0
 var top_edge: int
@@ -33,3 +36,14 @@ func snapshot() -> Dictionary:
 		"on_table": is_on_table, "tray_id": tray_id,
 		"owner_peer_id": owner_peer_id
 	}
+
+# int fields are cast explicitly because a save file round-trips through JSON,
+# which has no integer type and hands every number back as a float.
+func apply_snapshot(data: Dictionary) -> void:
+	current_position = Vector2(data.position[0], data.position[1])
+	current_rotation = int(data.rotation)
+	is_snapped = data.snapped
+	cluster_id = int(data.cluster_id)
+	is_on_table = data.on_table
+	tray_id = int(data.tray_id)
+	owner_peer_id = int(data.get("owner_peer_id", 0))

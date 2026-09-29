@@ -33,18 +33,48 @@ var pinch_distance := 0.0
 var bank_scrolling := false
 var rotation_enabled := true
 
+var network: NetworkSession
+var save_dirty := false
+var last_change_msec := 0
+var last_saved_msec := 0
+var autosave_timer: Timer
+
 var ui_root: Control
 var bank: PieceBank
 var preview_panel: Panel
 var preview_view: PuzzlePieceView
 var drag_ghost: PuzzlePieceView
 var reference_overlay: Control
-var reference_panel: PanelContainer
+var reference_panel: Panel
+var reference_title_bar: Control
+var reference_close_button: Button
+var reference_image_area: Control
+var reference_image_view: TextureRect
+var reference_grip: ColorRect
+var reference_positioned := false
+var reference_dragging := false
+var reference_resizing := false
+var reference_resize_start_size := Vector2.ZERO
+var reference_resize_start_mouse := Vector2.ZERO
+var reference_panning := false
+var reference_zoom := 1.0
+var reference_touch_index := -1
 var complete_banner: PanelContainer
 var complete_label: Label
 var rotation_button: Button
+var rotation_toggle: CheckButton
 var size_picker: OptionButton
 var top_hint: Label
+var network_status_label: Label
+var leave_button: Button
+
+var lobby_overlay: Control
+var lobby_stack: VBoxContainer
+var lobby_sub_open := false
+var host_port_field: LineEdit
+var host_status_label: Label
+var join_address_field: LineEdit
+var join_status_label: Label
 
 func _ready() -> void:
 	_apply_mobile_scale()
@@ -56,16 +86,42 @@ func _ready() -> void:
 	manager.bank_changed.connect(func(): bank.refresh())
 	manager.pieces_joined.connect(_on_pieces_joined)
 	manager.puzzle_completed.connect(_on_completed)
+	manager.piece_changed.connect(_mark_dirty.unbind(1))
+	manager.pieces_joined.connect(_mark_dirty.unbind(2))
+	manager.puzzle_completed.connect(_mark_dirty)
+	manager.bank_changed.connect(_mark_dirty)
+	network = NetworkSession.new()
+	add_child(network)
+	network.configure(manager, Callable(self, "_puzzle_config"))
+	network.peer_joined.connect(_on_peer_joined)
+	network.peer_left.connect(_on_peer_left)
+	network.connection_established.connect(_on_connection_established)
+	network.connection_failed.connect(_on_connection_failed)
+	network.server_disconnected.connect(_on_server_disconnected)
+	network.full_state_received.connect(_on_full_state_received)
 	_build_ui()
-	_start_puzzle(false)
+	_build_lobby_ui()
+	autosave_timer = Timer.new()
+	autosave_timer.wait_time = 2.0
+	autosave_timer.autostart = true
+	autosave_timer.timeout.connect(_on_autosave_tick)
+	add_child(autosave_timer)
 	get_viewport().size_changed.connect(_on_viewport_resized)
+	_show_lobby()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		if reference_overlay != null and reference_overlay.visible:
 			reference_overlay.visible = false
+		elif lobby_overlay != null and lobby_overlay.visible and lobby_sub_open:
+			_build_lobby_root()
 		else:
 			get_tree().quit()
+	elif what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		# Android may kill the app without a clean quit after backgrounding, and focus-out
+		# fires more reliably across OEM skins than the pause notification alone.
+		if network != null and (network.is_solo() or network.is_host()) and save_dirty:
+			_write_save()
 
 # Phones report a large pixel canvas, which shrinks the 1280x800 layout to unreadable
 # sizes. Scale the UI so the base layout maps to roughly 1.2 logical units per dp.
@@ -113,10 +169,13 @@ func _start_puzzle(new_seed: bool) -> void:
 	manager.configure(generated, cell, columns, rows)
 	if bank.collapsed:
 		bank.toggle_collapsed()
-	bank.configure(generated, source, cell, seed_value)
+	bank.configure(generated, source, seed_value)
 	complete_banner.visible = false
 	_fit_camera()
 	queue_redraw()
+	if network.is_host():
+		network.broadcast_full_state()
+	_mark_dirty()
 
 func _fit_camera() -> void:
 	var viewport_size := get_viewport_rect().size
@@ -160,7 +219,7 @@ func _build_ui() -> void:
 	size_picker.select(3)
 	size_picker.item_selected.connect(func(_index: int): _start_puzzle(false))
 	top.add_child(size_picker)
-	var rotation_toggle := CheckButton.new()
+	rotation_toggle = CheckButton.new()
 	rotation_toggle.text = "Rotation"
 	rotation_toggle.button_pressed = rotation_enabled
 	rotation_toggle.tooltip_text = "Random quarter-turns. Changing this restarts the puzzle."
@@ -183,6 +242,17 @@ func _build_ui() -> void:
 	top_hint.add_theme_font_size_override("font_size", 12)
 	top_hint.visible = get_viewport_rect().size.x >= 1050
 	top.add_child(top_hint)
+	network_status_label = Label.new()
+	network_status_label.text = "SOLO"
+	network_status_label.add_theme_font_size_override("font_size", 12)
+	network_status_label.add_theme_color_override("font_color", Color("9fd6c8"))
+	top.add_child(network_status_label)
+	leave_button = Button.new()
+	leave_button.text = "Leave"
+	leave_button.visible = false
+	leave_button.focus_mode = Control.FOCUS_NONE
+	leave_button.pressed.connect(_on_leave_pressed)
+	top.add_child(leave_button)
 	bank = PieceBank.new()
 	ui_root.add_child(bank)
 	bank.piece_hovered.connect(_on_bank_hovered)
@@ -219,44 +289,326 @@ func _build_ui() -> void:
 	complete_row.add_child(next)
 	_build_reference()
 
+# The reference window is a non-modal floating panel: laid out manually (not via
+# containers) so drag/resize/zoom math has a single source of truth for its geometry,
+# and so it keeps whatever position/size/zoom the player left it at across toggles.
 func _build_reference() -> void:
 	reference_overlay = Control.new()
 	reference_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	reference_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	reference_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	reference_overlay.visible = false
 	ui_root.add_child(reference_overlay)
-	var shade := ColorRect.new()
-	shade.color = Color(0.02, 0.04, 0.05, 0.8)
-	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	reference_overlay.add_child(shade)
-	reference_panel = PanelContainer.new()
-	reference_panel.anchor_left = 0.5
-	reference_panel.anchor_right = 0.5
-	reference_panel.anchor_top = 0.5
-	reference_panel.anchor_bottom = 0.5
+	reference_panel = Panel.new()
+	reference_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	reference_overlay.add_child(reference_panel)
-	_layout_reference()
-	var stack := VBoxContainer.new()
-	stack.add_theme_constant_override("separation", 10)
-	reference_panel.add_child(stack)
-	var bar := HBoxContainer.new()
-	stack.add_child(bar)
+
+	reference_title_bar = Control.new()
+	reference_title_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	reference_panel.add_child(reference_title_bar)
 	var title := Label.new()
-	title.text = "REFERENCE IMAGE"
+	title.text = "REFERENCE IMAGE  (drag to move)"
+	title.add_theme_font_size_override("font_size", 15)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title.offset_left = 10
+	reference_title_bar.add_child(title)
+
+	reference_close_button = Button.new()
+	reference_close_button.text = "×"
+	reference_close_button.tooltip_text = "Close"
+	reference_close_button.focus_mode = Control.FOCUS_NONE
+	reference_close_button.pressed.connect(func(): reference_overlay.visible = false)
+	reference_panel.add_child(reference_close_button)
+
+	reference_image_area = Control.new()
+	reference_image_area.clip_contents = true
+	reference_image_area.mouse_filter = Control.MOUSE_FILTER_STOP
+	reference_panel.add_child(reference_image_area)
+	reference_image_view = TextureRect.new()
+	reference_image_view.texture = source
+	reference_image_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reference_image_area.add_child(reference_image_view)
+
+	reference_grip = ColorRect.new()
+	reference_grip.color = Color(1, 1, 1, 0.18)
+	reference_grip.mouse_filter = Control.MOUSE_FILTER_STOP
+	reference_grip.tooltip_text = "Drag to resize"
+	reference_panel.add_child(reference_grip)
+
+	reference_panel.size = Vector2(560, 460)
+	_layout_reference()
+
+func _build_lobby_ui() -> void:
+	lobby_overlay = Control.new()
+	lobby_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lobby_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	lobby_overlay.visible = false
+	ui_root.add_child(lobby_overlay)
+	var shade := ColorRect.new()
+	shade.color = Color(0.02, 0.04, 0.05, 0.92)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lobby_overlay.add_child(shade)
+	var lobby_panel := PanelContainer.new()
+	lobby_panel.anchor_left = 0.5
+	lobby_panel.anchor_right = 0.5
+	lobby_panel.anchor_top = 0.5
+	lobby_panel.anchor_bottom = 0.5
+	lobby_panel.offset_left = -220
+	lobby_panel.offset_right = 220
+	lobby_panel.offset_top = -170
+	lobby_panel.offset_bottom = 170
+	lobby_overlay.add_child(lobby_panel)
+	lobby_stack = VBoxContainer.new()
+	lobby_stack.add_theme_constant_override("separation", 12)
+	lobby_panel.add_child(lobby_stack)
+	_build_lobby_root()
+
+func _show_lobby() -> void:
+	_build_lobby_root()
+	lobby_overlay.visible = true
+
+func _hide_lobby() -> void:
+	lobby_overlay.visible = false
+
+func _clear_lobby_stack() -> void:
+	for child in lobby_stack.get_children():
+		lobby_stack.remove_child(child)
+		child.queue_free()
+
+func _build_lobby_root() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = false
+	var title := Label.new()
+	title.text = "EMBERBOUND JIGSAW"
+	title.add_theme_font_size_override("font_size", 20)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(title)
+	if SaveManager.has_save():
+		var hint := Label.new()
+		hint.text = "A puzzle in progress will resume automatically."
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD
+		lobby_stack.add_child(hint)
+	var solo_button := Button.new()
+	solo_button.text = "Play Solo"
+	solo_button.pressed.connect(_on_solo_pressed)
+	lobby_stack.add_child(solo_button)
+	var host_button := Button.new()
+	host_button.text = "Host Game"
+	host_button.pressed.connect(_build_lobby_host)
+	lobby_stack.add_child(host_button)
+	var join_button := Button.new()
+	join_button.text = "Join Game"
+	join_button.pressed.connect(_build_lobby_join)
+	lobby_stack.add_child(join_button)
+
+func _build_lobby_host() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var title := Label.new()
+	title.text = "HOST GAME"
 	title.add_theme_font_size_override("font_size", 18)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bar.add_child(title)
-	var close := Button.new()
-	close.text = "Close  ×"
-	close.pressed.connect(func(): reference_overlay.visible = false)
-	bar.add_child(close)
-	var image := TextureRect.new()
-	image.texture = source
-	image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	image.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	image.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	stack.add_child(image)
+	lobby_stack.add_child(title)
+	var port_row := HBoxContainer.new()
+	lobby_stack.add_child(port_row)
+	var port_label := Label.new()
+	port_label.text = "Port"
+	port_row.add_child(port_label)
+	host_port_field = LineEdit.new()
+	host_port_field.text = str(NetworkSession.DEFAULT_PORT)
+	host_port_field.custom_minimum_size.x = 100
+	port_row.add_child(host_port_field)
+	var start_button := Button.new()
+	start_button.text = "Start Hosting"
+	start_button.pressed.connect(_on_start_hosting_pressed)
+	lobby_stack.add_child(start_button)
+	host_status_label = Label.new()
+	host_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	host_status_label.text = "Forward this port (UDP) on your router and share your DDNS address with players."
+	lobby_stack.add_child(host_status_label)
+	var back := Button.new()
+	back.text = "Back"
+	back.pressed.connect(_build_lobby_root)
+	lobby_stack.add_child(back)
+
+func _build_lobby_join() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var title := Label.new()
+	title.text = "JOIN GAME"
+	title.add_theme_font_size_override("font_size", 18)
+	lobby_stack.add_child(title)
+	join_address_field = LineEdit.new()
+	join_address_field.placeholder_text = "yourname.duckdns.org:%d" % NetworkSession.DEFAULT_PORT
+	lobby_stack.add_child(join_address_field)
+	var connect_button := Button.new()
+	connect_button.text = "Connect"
+	connect_button.pressed.connect(_on_connect_pressed)
+	lobby_stack.add_child(connect_button)
+	join_status_label = Label.new()
+	join_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	lobby_stack.add_child(join_status_label)
+	var back := Button.new()
+	back.text = "Back"
+	back.pressed.connect(_build_lobby_root)
+	lobby_stack.add_child(back)
+
+func _on_solo_pressed() -> void:
+	_hide_lobby()
+	_begin_local_session()
+
+func _on_start_hosting_pressed() -> void:
+	var port := int(host_port_field.text)
+	if port <= 0 or port > 65535:
+		host_status_label.text = "Enter a valid port number (1-65535)."
+		return
+	var err := network.start_host(port)
+	if err != OK:
+		host_status_label.text = "Could not start hosting (error %d). Is the port already in use?" % err
+		return
+	_hide_lobby()
+	_begin_local_session()
+	_update_network_status()
+
+func _on_connect_pressed() -> void:
+	var text := join_address_field.text.strip_edges()
+	var address := text
+	var port := NetworkSession.DEFAULT_PORT
+	var split := text.rsplit(":", true, 1)
+	if split.size() == 2:
+		address = split[0]
+		port = int(split[1])
+	if address.is_empty() or port <= 0 or port > 65535:
+		join_status_label.text = "Enter an address as host:port."
+		return
+	var err := network.start_client(address, port)
+	if err != OK:
+		join_status_label.text = "Could not start connection (error %d)." % err
+		return
+	join_status_label.text = "Connecting..."
+
+func _begin_local_session() -> void:
+	var saved := SaveManager.load_state()
+	if not saved.is_empty():
+		_restore_puzzle(saved)
+	else:
+		_start_puzzle(false)
+
+func _on_leave_pressed() -> void:
+	network.stop()
+	_update_network_status()
+	_show_lobby()
+
+func _on_peer_joined(_id: int) -> void:
+	_update_network_status()
+
+func _on_peer_left(_id: int) -> void:
+	_update_network_status()
+
+func _on_connection_established() -> void:
+	_update_network_status()
+
+func _on_connection_failed(reason: String) -> void:
+	if join_status_label != null:
+		join_status_label.text = "%s — check the address/port and that the host's router is forwarding UDP." % reason
+
+func _on_server_disconnected() -> void:
+	_apply_role_restrictions()
+	_show_lobby()
+	if join_status_label != null:
+		join_status_label.text = "Disconnected from host."
+
+func _on_full_state_received(config: Dictionary, snapshots: Array) -> void:
+	var saved := config.duplicate()
+	saved["pieces"] = snapshots
+	_hide_lobby()
+	_restore_puzzle(saved)
+	_update_network_status()
+
+func _update_network_status() -> void:
+	if network.is_host():
+		network_status_label.text = "HOSTING (%d)" % multiplayer.get_peers().size()
+		leave_button.visible = true
+	elif network.is_client():
+		network_status_label.text = "CONNECTED"
+		leave_button.visible = true
+	else:
+		network_status_label.text = "SOLO"
+		leave_button.visible = false
+	_apply_role_restrictions()
+
+func _apply_role_restrictions() -> void:
+	var editable := not network.is_client()
+	size_picker.disabled = not editable
+	rotation_toggle.disabled = not editable
+
+func _puzzle_config() -> Dictionary:
+	return {
+		"seed_value": seed_value, "columns": columns, "rows": rows,
+		"rotation_enabled": rotation_enabled,
+		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
+	}
+
+func _restore_puzzle(saved: Dictionary) -> void:
+	for child in piece_layer.get_children():
+		child.queue_free()
+	table_views.clear()
+	selected_table_id = -1
+	dragging_table_id = -1
+	selected_bank_id = -1
+	bank_press_id = -1
+	_hide_preview()
+	_clear_ghost()
+	seed_value = int(saved.seed_value)
+	columns = int(saved.columns)
+	rows = int(saved.rows)
+	rotation_enabled = bool(saved.rotation_enabled)
+	rotation_toggle.button_pressed = rotation_enabled
+	rotation_button.visible = rotation_enabled
+	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
+	var size_index := SIZES.find(Vector2i(columns, rows))
+	if size_index >= 0:
+		size_picker.select(size_index)
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
+	if generated.size() != columns * rows:
+		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
+		return
+	manager.configure(generated, cell, columns, rows)
+	manager.apply_snapshots(saved.pieces) # emits piece_changed for every piece; _on_piece_changed creates each on-table view reactively
+	manager.started_at = Time.get_ticks_msec() - int(saved.get("elapsed_ms", 0))
+	if bank.collapsed:
+		bank.toggle_collapsed()
+	bank.configure(generated, source, seed_value)
+	complete_banner.visible = manager.completion_announced
+	if manager.completion_announced:
+		var seconds := manager.elapsed_seconds()
+		complete_label.text = "Puzzle Complete  •  %02d:%02d" % [seconds / 60, seconds % 60]
+	_apply_role_restrictions()
+	_fit_camera()
+	queue_redraw()
+
+func _mark_dirty() -> void:
+	save_dirty = true
+	last_change_msec = Time.get_ticks_msec()
+
+func _on_autosave_tick() -> void:
+	if not save_dirty or not (network.is_solo() or network.is_host()):
+		return
+	var now := Time.get_ticks_msec()
+	if now - last_change_msec >= 1500 or now - last_saved_msec >= 15000:
+		_write_save()
+
+func _write_save() -> void:
+	var piece_snapshots := []
+	for piece in manager.pieces:
+		var snap := piece.snapshot()
+		snap.owner_peer_id = 0
+		piece_snapshots.append(snap)
+	var data := _puzzle_config()
+	data["pieces"] = piece_snapshots
+	SaveManager.save(data)
+	save_dirty = false
+	last_saved_msec = Time.get_ticks_msec()
 
 func _on_viewport_resized() -> void:
 	_layout_reference()
@@ -267,17 +619,139 @@ func _on_viewport_resized() -> void:
 	if preview_panel.visible:
 		preview_panel.position.x = clampf(preview_panel.position.x, 8, get_viewport_rect().size.x - preview_panel.size.x - 8)
 
+const REFERENCE_TITLE_HEIGHT := 32.0
+const REFERENCE_GRIP_SIZE := 18.0
+
+# Keeps the floating window's size/position inside the viewport without resetting
+# where the player left it, then re-lays-out its children from that size.
 func _layout_reference() -> void:
 	if reference_panel == null:
 		return
 	var viewport_size := get_viewport_rect().size
-	var panel_size := Vector2(minf(950, viewport_size.x - 32), minf(700, viewport_size.y - 80))
-	reference_panel.offset_left = -panel_size.x * 0.5
-	reference_panel.offset_right = panel_size.x * 0.5
-	reference_panel.offset_top = -panel_size.y * 0.5
-	reference_panel.offset_bottom = panel_size.y * 0.5
+	var max_size := Vector2(maxf(280, viewport_size.x - 24), maxf(240, viewport_size.y - 24))
+	reference_panel.size = Vector2(minf(reference_panel.size.x, max_size.x), minf(reference_panel.size.y, max_size.y))
+	if not reference_positioned:
+		reference_panel.position = ((viewport_size - reference_panel.size) * 0.5).max(Vector2(12, 60))
+		reference_positioned = true
+	reference_panel.position = Vector2(
+		clampf(reference_panel.position.x, 12, maxf(12, viewport_size.x - reference_panel.size.x - 12)),
+		clampf(reference_panel.position.y, 60, maxf(60, viewport_size.y - reference_panel.size.y - 12))
+	)
+	_layout_reference_window()
+
+func _layout_reference_window() -> void:
+	var size := reference_panel.size
+	reference_title_bar.position = Vector2.ZERO
+	reference_title_bar.size = Vector2(size.x, REFERENCE_TITLE_HEIGHT)
+	reference_close_button.size = Vector2(26, 26)
+	reference_close_button.position = Vector2(size.x - 32, 3)
+	reference_image_area.position = Vector2(6, REFERENCE_TITLE_HEIGHT + 4)
+	reference_image_area.size = Vector2(size.x - 12, size.y - REFERENCE_TITLE_HEIGHT - 12)
+	reference_grip.position = Vector2(size.x - REFERENCE_GRIP_SIZE - 3, size.y - REFERENCE_GRIP_SIZE - 3)
+	reference_grip.size = Vector2(REFERENCE_GRIP_SIZE, REFERENCE_GRIP_SIZE)
+	_update_reference_image_layout()
+	_clamp_reference_pan()
+
+func _update_reference_image_layout() -> void:
+	if reference_image_area == null or source == null:
+		return
+	var area_size := reference_image_area.size
+	var tex_size := source.get_size()
+	if area_size.x <= 0 or area_size.y <= 0 or tex_size.x <= 0 or tex_size.y <= 0:
+		return
+	var fit := minf(area_size.x / tex_size.x, area_size.y / tex_size.y)
+	reference_image_view.size = tex_size * fit * reference_zoom
+
+func _clamp_reference_pan() -> void:
+	var area_size := reference_image_area.size
+	var display_size := reference_image_view.size
+	var pos := reference_image_view.position
+	if display_size.x <= area_size.x:
+		pos.x = (area_size.x - display_size.x) * 0.5
+	else:
+		pos.x = clampf(pos.x, area_size.x - display_size.x, 0.0)
+	if display_size.y <= area_size.y:
+		pos.y = (area_size.y - display_size.y) * 0.5
+	else:
+		pos.y = clampf(pos.y, area_size.y - display_size.y, 0.0)
+	reference_image_view.position = pos
+
+func _pan_reference_image(relative: Vector2) -> void:
+	reference_image_view.position += relative
+	_clamp_reference_pan()
+
+# Keeps the point under the cursor fixed on screen while the zoom level changes,
+# the same trick _zoom_at uses for the main board camera.
+func _zoom_reference(screen_position: Vector2, multiplier: float) -> void:
+	var area_pos := reference_image_area.get_global_rect().position
+	var old_size := reference_image_view.size
+	var fraction := (screen_position - area_pos - reference_image_view.position) / old_size
+	reference_zoom = clampf(reference_zoom * multiplier, 1.0, 4.0)
+	_update_reference_image_layout()
+	reference_image_view.position = screen_position - area_pos - fraction * reference_image_view.size
+	_clamp_reference_pan()
+
+func _reference_window_rect() -> Rect2:
+	return reference_panel.get_global_rect()
+
+func _reference_title_rect() -> Rect2:
+	return reference_title_bar.get_global_rect()
+
+func _reference_image_rect() -> Rect2:
+	return reference_image_area.get_global_rect()
+
+func _reference_grip_rect() -> Rect2:
+	return reference_grip.get_global_rect()
+
+# Handles press/release/wheel for the reference window; returns true if the event was
+# consumed (so board interaction underneath is skipped) even when it wasn't a drag/resize/
+# pan start -- e.g. a click on blank panel padding shouldn't also pick up a piece.
+func _handle_reference_mouse_button(event: InputEventMouseButton) -> bool:
+	if not reference_overlay.visible:
+		return false
+	if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		if event.pressed and _reference_image_rect().has_point(event.position):
+			_zoom_reference(event.position, 1.15 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.15)
+			return true
+		return _reference_window_rect().has_point(event.position)
+	if event.button_index != MOUSE_BUTTON_LEFT:
+		return _reference_window_rect().has_point(event.position)
+	if not event.pressed:
+		var was_active := reference_dragging or reference_resizing or reference_panning
+		reference_dragging = false
+		reference_resizing = false
+		reference_panning = false
+		return was_active or _reference_window_rect().has_point(event.position)
+	if _reference_grip_rect().has_point(event.position):
+		reference_resizing = true
+		reference_resize_start_size = reference_panel.size
+		reference_resize_start_mouse = event.position
+		return true
+	if _reference_title_rect().has_point(event.position):
+		reference_dragging = true
+		return true
+	if _reference_image_rect().has_point(event.position):
+		reference_panning = true
+		return true
+	return _reference_window_rect().has_point(event.position)
+
+func _handle_reference_touch_press(position: Vector2) -> bool:
+	if _reference_grip_rect().has_point(position):
+		reference_resizing = true
+		reference_resize_start_size = reference_panel.size
+		reference_resize_start_mouse = position
+		return true
+	if _reference_title_rect().has_point(position):
+		reference_dragging = true
+		return true
+	if _reference_image_rect().has_point(position):
+		reference_panning = true
+		return true
+	return _reference_window_rect().has_point(position)
 
 func _on_bank_action(action: String) -> void:
+	if network.is_client() and action in ["spread", "reset", "new"]:
+		return
 	if action.begins_with("filter:"):
 		bank.set_filter(action.trim_prefix("filter:"))
 	elif action == "assign_tray":
@@ -319,8 +793,8 @@ func _show_preview(piece_id: int, screen_position: Vector2) -> void:
 		preview_view.queue_free()
 	preview_view = PIECE_SCENE.instantiate()
 	preview_panel.add_child(preview_view)
-	preview_view.setup(piece, source, cell)
-	var factor := minf(213.0 / cell.x, 213.0 / cell.y)
+	preview_view.setup(piece, source, piece.piece_size)
+	var factor := minf(213.0 / piece.piece_size.x, 213.0 / piece.piece_size.y)
 	preview_view.place_centered(Vector2(139, 121), factor)
 	var width := get_viewport_rect().size.x
 	preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
@@ -339,7 +813,8 @@ func _start_bank_drag(screen_position: Vector2) -> void:
 	_hide_preview()
 	drag_ghost = PIECE_SCENE.instantiate()
 	ui_root.add_child(drag_ghost)
-	drag_ghost.setup(manager.get_piece(bank_press_id), source, cell)
+	var piece_size := manager.get_piece(bank_press_id).piece_size
+	drag_ghost.setup(manager.get_piece(bank_press_id), source, piece_size)
 	drag_ghost.modulate.a = 0.86
 	_update_ghost(screen_position)
 
@@ -347,7 +822,8 @@ func _update_ghost(screen_position: Vector2) -> void:
 	if drag_ghost == null:
 		return
 	var over_table := _is_table_screen(screen_position)
-	var factor := camera.zoom.x if over_table else minf(85.0 / cell.x, 85.0 / cell.y)
+	var piece_size := manager.get_piece(bank_press_id).piece_size
+	var factor := camera.zoom.x if over_table else minf(85.0 / piece_size.x, 85.0 / piece_size.y)
 	drag_ghost.place_centered(screen_position, factor)
 
 func _clear_ghost() -> void:
@@ -378,7 +854,7 @@ func _input(event: InputEvent) -> void:
 			reference_overlay.visible = false
 		elif event.keycode == KEY_R and rotation_enabled:
 			_rotate_selected()
-	if reference_overlay.visible:
+	if lobby_overlay.visible:
 		return
 	if event is InputEventMagnifyGesture:
 		_zoom_at(event.position, event.factor)
@@ -393,6 +869,8 @@ func _input(event: InputEvent) -> void:
 		_handle_touch_drag(event)
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
+	if _handle_reference_mouse_button(event):
+		return
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed and _is_table_screen(event.position):
 		_zoom_at(event.position, 1.12)
 		return
@@ -418,7 +896,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			bank_press_id = -1
 			_clear_ghost()
 		if dragging_table_id >= 0:
-			manager.request_release(dragging_table_id)
+			network.request_release(dragging_table_id)
 			_set_cluster_z(dragging_table_id, 0)
 			_select_table_piece(dragging_table_id)
 			dragging_table_id = -1
@@ -438,12 +916,24 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 	var world := _screen_to_world(event.position)
 	var picked := _pick_table_piece(world)
 	_select_table_piece(picked)
-	if picked >= 0 and manager.request_pickup(picked):
+	if picked >= 0 and network.request_pickup(picked):
 		dragging_table_id = picked
 		drag_offset = world - manager.get_piece(picked).current_position
 		_bring_cluster_forward(picked)
 
 func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
+	if reference_dragging:
+		reference_panel.position += event.relative
+		_layout_reference()
+		return
+	if reference_resizing:
+		var new_size: Vector2 = reference_resize_start_size + (event.position - reference_resize_start_mouse)
+		reference_panel.size = Vector2(maxf(280, new_size.x), maxf(240, new_size.y))
+		_layout_reference()
+		return
+	if reference_panning:
+		_pan_reference_image(event.relative)
+		return
 	if resizing_bank:
 		bank.set_height(get_viewport_rect().size.y - event.position.y)
 		return
@@ -456,10 +946,14 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if mouse_panning:
 		camera.position -= event.relative / camera.zoom.x
 	elif dragging_table_id >= 0:
-		manager.request_move(dragging_table_id, _screen_to_world(event.position) - drag_offset)
+		network.request_move(dragging_table_id, _screen_to_world(event.position) - drag_offset)
 
 func _handle_touch(event: InputEventScreenTouch) -> void:
 	if event.pressed:
+		if reference_overlay.visible and fingers.is_empty() and _handle_reference_touch_press(event.position):
+			reference_touch_index = event.index
+			fingers[event.index] = event.position
+			return
 		fingers[event.index] = event.position
 		if fingers.size() == 2:
 			pinch_distance = _finger_distance()
@@ -480,7 +974,7 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 		if event.double_tap and picked >= 0 and rotation_enabled:
 			_rotate_selected()
 			return
-		if picked >= 0 and manager.request_pickup(picked):
+		if picked >= 0 and network.request_pickup(picked):
 			touch_table_id = picked
 			drag_offset = world - manager.get_piece(picked).current_position
 			_bring_cluster_forward(picked)
@@ -489,6 +983,11 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 		touch_last = event.position
 	else:
 		fingers.erase(event.index)
+		if event.index == reference_touch_index:
+			reference_dragging = false
+			reference_resizing = false
+			reference_panning = false
+			reference_touch_index = -1
 		resizing_bank = false
 		bank_scrolling = false
 		if bank_press_id >= 0:
@@ -497,7 +996,7 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 			bank_press_id = -1
 			_clear_ghost()
 		if touch_table_id >= 0:
-			manager.request_release(touch_table_id)
+			network.request_release(touch_table_id)
 			_set_cluster_z(touch_table_id, 0)
 			_select_table_piece(touch_table_id)
 			touch_table_id = -1
@@ -508,6 +1007,17 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 func _handle_touch_drag(event: InputEventScreenDrag) -> void:
 	var previous: Vector2 = fingers.get(event.index, event.position - event.relative)
 	fingers[event.index] = event.position
+	if event.index == reference_touch_index:
+		if reference_dragging:
+			reference_panel.position += event.relative
+			_layout_reference()
+		elif reference_resizing:
+			var new_size: Vector2 = reference_resize_start_size + (event.position - reference_resize_start_mouse)
+			reference_panel.size = Vector2(maxf(280, new_size.x), maxf(240, new_size.y))
+			_layout_reference()
+		elif reference_panning:
+			_pan_reference_image(event.relative)
+		return
 	if resizing_bank:
 		bank.set_height(get_viewport_rect().size.y - event.position.y)
 		return
@@ -537,7 +1047,7 @@ func _handle_touch_drag(event: InputEventScreenDrag) -> void:
 		pinch_distance = distance
 		camera.position -= (event.position - previous) * 0.5 / camera.zoom.x
 	elif touch_table_id >= 0:
-		manager.request_move(touch_table_id, _screen_to_world(event.position) - drag_offset)
+		network.request_move(touch_table_id, _screen_to_world(event.position) - drag_offset)
 	elif touch_panning and _is_table_screen(event.position):
 		camera.position -= event.relative / camera.zoom.x
 
@@ -580,27 +1090,30 @@ func _set_cluster_z(piece_id: int, value: int) -> void:
 			table_views[member_id].z_index = value
 
 func _place_bank_piece(piece_id: int, screen_position: Vector2) -> void:
-	var position := _screen_to_world(screen_position) - cell * 0.5
-	if not manager.request_place_from_bank(piece_id, position):
+	var position := _screen_to_world(screen_position) - manager.get_piece(piece_id).piece_size * 0.5
+	if not network.request_place_from_bank(piece_id, position):
 		return
-	var view: PuzzlePieceView = PIECE_SCENE.instantiate()
-	piece_layer.add_child(view)
-	view.setup(manager.get_piece(piece_id), source, cell)
-	view.position = position
-	table_views[piece_id] = view
-	_on_piece_changed(piece_id)
+	# request_place_from_bank synchronously emits piece_changed, which _on_piece_changed
+	# already used to create and position the view -- creating another one here would
+	# leave a duplicate, orphaned copy behind on the board.
 	selected_bank_id = -1
 	bank.set_selected(-1)
 	_hide_preview()
 	_select_table_piece(piece_id)
-	manager.request_release(piece_id)
+	network.request_release(piece_id)
 	_select_table_piece(piece_id)
 
 func _on_piece_changed(piece_id: int) -> void:
 	var piece := manager.get_piece(piece_id)
-	if table_views.has(piece_id):
-		var view: PuzzlePieceView = table_views[piece_id]
-		view.place_centered(piece.current_position + cell * 0.5)
+	if piece == null or not piece.is_on_table:
+		return
+	# A piece placed/moved by a remote peer has no local view yet; create it reactively.
+	if not table_views.has(piece_id):
+		var new_view: PuzzlePieceView = PIECE_SCENE.instantiate()
+		piece_layer.add_child(new_view)
+		new_view.setup(piece, source, piece.piece_size)
+		table_views[piece_id] = new_view
+	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
 
 func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()
@@ -612,7 +1125,7 @@ func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 
 func _rotate_selected() -> void:
 	if rotation_enabled and selected_table_id >= 0:
-		manager.request_rotate(selected_table_id)
+		network.request_rotate(selected_table_id)
 
 func _spread_table_pieces() -> void:
 	var group_ids := manager.clusters.keys()
@@ -627,16 +1140,17 @@ func _spread_table_pieces() -> void:
 	for group_id in group_ids:
 		var members: Array = manager.clusters[group_id]
 		var first: PuzzlePieceState = manager.pieces[members[0]]
-		var bounds := Rect2(first.current_position + cell * 0.5, Vector2.ZERO)
+		var bounds := Rect2(first.current_position + first.piece_size * 0.5, Vector2.ZERO)
 		for member_id in members:
 			var member: PuzzlePieceState = manager.pieces[member_id]
+			var member_center := member.piece_size * 0.5
 			for point in member.outline:
-				var world_point := member.current_position + cell * 0.5 + (point - cell * 0.5).rotated(deg_to_rad(member.current_rotation))
+				var world_point := member.current_position + member_center + (point - member_center).rotated(deg_to_rad(member.current_rotation))
 				bounds = bounds.expand(world_point)
 		if cursor.x > origin.x and cursor.x + bounds.size.x > origin.x + available_width:
 			cursor = Vector2(origin.x, cursor.y + row_height)
 			row_height = 0
-		manager.request_move(first.piece_id, first.current_position + cursor - bounds.position)
+		network.request_move(first.piece_id, first.current_position + cursor - bounds.position)
 		cursor.x += bounds.size.x + gap
 		row_height = maxf(row_height, bounds.size.y + gap)
 

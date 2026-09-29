@@ -51,6 +51,7 @@ func _run() -> void:
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	var game: Node2D = scene.instantiate()
 	root.add_child(game)
+	game._hide_lobby()
 	game.size_picker.select(1)
 	game._set_rotation_enabled(false)
 	await process_frame
@@ -74,7 +75,7 @@ func _run() -> void:
 	await process_frame
 	_check(game.manager.pieces[first_id].is_on_table, "second click places selected piece")
 	var piece_position: Vector2 = game.manager.pieces[first_id].current_position
-	var grab: Vector2 = game.get_viewport().get_canvas_transform() * (piece_position + game.cell * 0.5)
+	var grab: Vector2 = game.get_viewport().get_canvas_transform() * (piece_position + game.manager.pieces[first_id].piece_size * 0.5)
 	_mouse_button(grab, true)
 	_mouse_motion(grab + Vector2(45, 20), Vector2(45, 20))
 	_mouse_button(grab + Vector2(45, 20), false)
@@ -126,7 +127,7 @@ func _run() -> void:
 	await process_frame
 	_check(game.manager.pieces[third_id].is_on_table, "touch tap places piece")
 	var touch_piece_before: Vector2 = game.manager.pieces[third_id].current_position
-	var touch_grab: Vector2 = game.get_viewport().get_canvas_transform() * (touch_piece_before + game.cell * 0.5)
+	var touch_grab: Vector2 = game.get_viewport().get_canvas_transform() * (touch_piece_before + game.manager.pieces[third_id].piece_size * 0.5)
 	_touch(touch_grab, true)
 	_touch_drag(touch_grab + Vector2(35, 15), Vector2(35, 15))
 	_touch(touch_grab + Vector2(35, 15), false)
@@ -164,13 +165,13 @@ func _run() -> void:
 	game._start_puzzle(false)
 	var group_start := Vector2(430, 300)
 	game._place_bank_piece(0, group_start)
-	game._place_bank_piece(1, group_start + Vector2(game.cell.x * game.camera.zoom.x + 3, 0))
+	game._place_bank_piece(1, group_start + Vector2(game.manager.pieces[0].piece_size.x * game.camera.zoom.x + 3, 0))
 	await process_frame
 	_check(game.manager.cluster_members(0).size() == 2, "two bank pieces join away from board target")
 	_check(game.table_views[0].selected and game.table_views[1].selected, "joined group selection is visible")
 	var group_before: Vector2 = game.manager.pieces[0].current_position
 	var member_before: Vector2 = game.manager.pieces[1].current_position
-	var group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (member_before + game.cell * 0.5)
+	var group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (member_before + game.manager.pieces[1].piece_size * 0.5)
 	_mouse_button(group_grab, true)
 	_mouse_motion(group_grab + Vector2(60, 25), Vector2(60, 25))
 	_mouse_button(group_grab + Vector2(60, 25), false)
@@ -180,7 +181,7 @@ func _run() -> void:
 	_check(group_delta.length() > 30 and group_delta.distance_to(member_delta) < 0.01, "dragging a joined piece moves both views together")
 	var touch_group_before: Vector2 = game.manager.pieces[0].current_position
 	var touch_member_before: Vector2 = game.manager.pieces[1].current_position
-	var touch_group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (touch_group_before + game.cell * 0.5)
+	var touch_group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (touch_group_before + game.manager.pieces[0].piece_size * 0.5)
 	_touch(touch_group_grab, true)
 	_touch_drag(touch_group_grab + Vector2(30, -20), Vector2(30, -20))
 	_touch(touch_group_grab + Vector2(30, -20), false)
@@ -220,7 +221,7 @@ func _run() -> void:
 	game._place_bank_piece(game.bank.row.get_child(0).piece_id, tap_point)
 	var tap_id: int = game.selected_table_id
 	var rotation_before: int = game.manager.pieces[tap_id].current_rotation
-	var tap_grab: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[tap_id].current_position + game.cell * 0.5)
+	var tap_grab: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[tap_id].current_position + game.manager.pieces[tap_id].piece_size * 0.5)
 	_touch(tap_grab, true)
 	_touch(tap_grab, false)
 	_double_tap(tap_grab)

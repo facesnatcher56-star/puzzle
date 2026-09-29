@@ -52,7 +52,12 @@ func request_pickup(piece_id: int, player_id: int = 0) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table:
 		return false
-	for member_id in cluster_members(piece_id):
+	var members := cluster_members(piece_id)
+	for member_id in members:
+		var owner: int = pieces[member_id].owner_peer_id
+		if owner != 0 and owner != player_id:
+			return false
+	for member_id in members:
 		pieces[member_id].owner_peer_id = player_id
 	return true
 
@@ -73,23 +78,35 @@ func request_rotate(piece_id: int) -> bool:
 	var members := cluster_members(piece_id)
 	var pivot := Vector2.ZERO
 	for member_id in members:
-		pivot += pieces[member_id].current_position + cell_size * 0.5
+		var member: PuzzlePieceState = pieces[member_id]
+		pivot += member.current_position + member.piece_size * 0.5
 	pivot /= members.size()
 	for member_id in members:
 		var member: PuzzlePieceState = pieces[member_id]
-		var center := member.current_position + cell_size * 0.5
-		member.current_position = pivot + (center - pivot).rotated(PI * 0.5) - cell_size * 0.5
+		var center := member.current_position + member.piece_size * 0.5
+		member.current_position = pivot + (center - pivot).rotated(PI * 0.5) - member.piece_size * 0.5
 		member.current_rotation = (member.current_rotation + 90) % 360
 		piece_changed.emit(member_id)
 	return true
 
-func request_release(piece_id: int) -> bool:
+func request_release(piece_id: int, player_id: int = 0) -> bool:
 	var piece := get_piece(piece_id)
-	if piece == null or not piece.is_on_table:
+	if piece == null or not piece.is_on_table or piece.owner_peer_id != player_id:
 		return false
 	for member_id in cluster_members(piece_id):
 		pieces[member_id].owner_peer_id = 0
 	return snap_piece(piece_id)
+
+# Used when a networked peer disconnects mid-drag so their held pieces don't stay locked forever.
+func release_pieces_owned_by(player_id: int) -> void:
+	if player_id == 0:
+		return
+	var held := []
+	for piece in pieces:
+		if piece.owner_peer_id == player_id:
+			held.append(piece.piece_id)
+	for piece_id in held:
+		request_release(piece_id, player_id)
 
 # A joint requires correct neighboring IDs, complementary edges, equal rotation,
 # and almost coincident edge contours. The board's world position is irrelevant.
@@ -99,7 +116,7 @@ func snap_piece(piece_id: int) -> bool:
 		return false
 	var joined_any := false
 	var moving_cluster: int = piece.cluster_id
-	var contact_tolerance := minf(cell_size.x, cell_size.y) * 0.13
+	var contact_tolerance := minf(cell_size.x, cell_size.y) * 0.15
 	while true:
 		var best_target := -1
 		var best_offset := Vector2.ZERO
@@ -164,7 +181,7 @@ func _edges_touch(a: PuzzlePieceState, side: int, b: PuzzlePieceState) -> bool:
 
 func _world_edge(piece: PuzzlePieceState, side: int) -> PackedVector2Array:
 	var result := PackedVector2Array()
-	var center := cell_size * 0.5
+	var center := piece.piece_size * 0.5
 	var angle := deg_to_rad(piece.current_rotation)
 	for point in piece.edge_contours[side]:
 		result.append(piece.current_position + center + (point - center).rotated(angle))
@@ -193,6 +210,27 @@ func _edge_type(piece: PuzzlePieceState, side: int) -> int:
 		2: return piece.bottom_edge
 		3: return piece.left_edge
 	return 0
+
+# Fully recomputes clusters from each piece's own cluster_id rather than replaying
+# the host's incremental merge steps, so a client never has to reproduce that algebra.
+func rebuild_clusters() -> void:
+	clusters.clear()
+	for piece in pieces:
+		if piece.is_on_table and piece.cluster_id >= 0:
+			clusters.get_or_add(piece.cluster_id, []).append(piece.piece_id)
+
+# Applies authoritative snapshots (from a save file or a host's network sync) onto
+# the current pieces array, which must already be configured with matching geometry.
+func apply_snapshots(snapshots: Array) -> void:
+	for data in snapshots:
+		var piece := get_piece(int(data.piece_id))
+		if piece != null:
+			piece.apply_snapshot(data)
+	rebuild_clusters()
+	completion_announced = pieces.size() > 0 and table_count() == pieces.size() and clusters.size() == 1
+	for piece in pieces:
+		piece_changed.emit(piece.piece_id)
+	bank_changed.emit()
 
 func move_piece_to_tray(piece_id: int, tray_id: int) -> bool:
 	var piece := get_piece(piece_id)

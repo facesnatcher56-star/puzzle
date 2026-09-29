@@ -9,7 +9,6 @@ signal action_requested(action: String)
 var pieces: Array[PuzzlePieceState] = []
 var display_order: Array[int] = []
 var source: Texture2D
-var cell_size := Vector2.ONE
 var bank_height := 178.0
 var expanded_height := 178.0
 var collapsed := false
@@ -105,10 +104,9 @@ func toggle_collapsed() -> void:
 	_apply_height()
 	_layout()
 
-func configure(states: Array[PuzzlePieceState], image: Texture2D, cell: Vector2, seed_value: int) -> void:
+func configure(states: Array[PuzzlePieceState], image: Texture2D, seed_value: int) -> void:
 	pieces = states
 	source = image
-	cell_size = cell
 	display_order.clear()
 	for i in range(states.size()):
 		display_order.append(i)
@@ -144,7 +142,7 @@ func refresh() -> void:
 			continue
 		var item := PieceBankItem.new()
 		row.add_child(item)
-		item.setup(piece, source, cell_size)
+		item.setup(piece, source, piece.piece_size)
 		item.set_active(piece.piece_id == selected_id)
 		item.hovered.connect(func(id: int, pos: Vector2): piece_hovered.emit(id, pos))
 		item.unhovered.connect(func(id: int): piece_unhovered.emit(id))

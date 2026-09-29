@@ -10,25 +10,10 @@ func _check(condition: bool, message: String) -> void:
 		failures += 1
 		push_error("SMOKE TEST FAILED: " + message)
 
-func _edge(piece: PuzzlePieceState, side: int, cell: Vector2) -> PackedVector2Array:
-	var corners := [Vector2.ZERO, Vector2(cell.x, 0), cell, Vector2(0, cell.y)]
-	var start_corner: Vector2 = corners[side]
-	var end_corner: Vector2 = corners[(side + 1) % 4]
-	var start_index := -1
-	var end_index := -1
-	for i in range(piece.outline.size()):
-		if piece.outline[i].distance_to(start_corner) < 0.01:
-			start_index = i
-		if piece.outline[i].distance_to(end_corner) < 0.01:
-			end_index = i
-	_check(start_index >= 0 and end_index >= 0, "outline contains edge corners")
+func _edge(piece: PuzzlePieceState, side: int) -> PackedVector2Array:
 	var result := PackedVector2Array()
-	var index := start_index
-	while true:
-		result.append(piece.correct_position + piece.outline[index])
-		if index == end_index:
-			break
-		index = (index + 1) % piece.outline.size()
+	for point in piece.edge_contours[side]:
+		result.append(piece.correct_position + point)
 	return result
 
 func _matching_edges(a: PackedVector2Array, b: PackedVector2Array) -> bool:
@@ -54,7 +39,9 @@ func _run() -> void:
 	var curved := 0
 	var edge_count := 0
 	for piece in manager.pieces:
-		_check(piece.outline.size() > 20, "piece has a sampled silhouette")
+		# Threshold covers the sparsest family (triangular, ~5 pts/tab) on an interior
+		# piece with 4 tabbed sides; smooth round-knob tabs run ~30 pts/tab instead.
+		_check(piece.outline.size() > 8, "piece has a sampled silhouette")
 		_check(Geometry2D.triangulate_polygon(piece.outline).size() >= 3, "piece polygon triangulates")
 		if piece.is_edge_piece:
 			edge_count += 1
@@ -71,11 +58,11 @@ func _run() -> void:
 		if piece.column < game.columns - 1:
 			var neighbor: PuzzlePieceState = manager.pieces[piece.piece_id + 1]
 			_check(piece.right_edge == -neighbor.left_edge, "horizontal edges complement")
-			_check(_matching_edges(_edge(piece, 1, game.cell), _edge(neighbor, 3, game.cell)), "horizontal seam geometry matches")
+			_check(_matching_edges(_edge(piece, 1), _edge(neighbor, 3)), "horizontal seam geometry matches")
 		if piece.row < game.rows - 1:
 			var neighbor: PuzzlePieceState = manager.pieces[piece.piece_id + game.columns]
 			_check(piece.bottom_edge == -neighbor.top_edge, "vertical edges complement")
-			_check(_matching_edges(_edge(piece, 2, game.cell), _edge(neighbor, 0, game.cell)), "vertical seam geometry matches")
+			_check(_matching_edges(_edge(piece, 2), _edge(neighbor, 0)), "vertical seam geometry matches")
 	_check(curved == 48, "every piece has an internal shaped edge")
 	game.bank.set_filter("EDGES")
 	_check(game.bank.row.get_child_count() == edge_count, "edge filter count")
@@ -101,10 +88,10 @@ func _run() -> void:
 	manager.request_place_from_bank(3, free_anchor + Vector2(game.cell.x + 2, 2))
 	_check(not manager.request_release(3), "wrong neighbor cannot join when nearby")
 	var second: PuzzlePieceState = manager.pieces[1]
-	manager.request_place_from_bank(1, free_anchor + Vector2(game.cell.x + 4, 3))
+	manager.request_place_from_bank(1, free_anchor + Vector2(first.piece_size.x + 4, 3))
 	_check(manager.request_release(1), "correct touching neighbor joins anywhere")
 	_check(manager.cluster_members(0).size() == 2, "joined pieces share a cluster")
-	_check(second.current_position.distance_to(free_anchor + Vector2(game.cell.x, 0)) < 0.01, "joint aligns exactly")
+	_check(second.current_position.distance_to(free_anchor + Vector2(first.piece_size.x, 0)) < 0.01, "joint aligns exactly")
 	_check(first.current_position == free_anchor, "stationary cluster stays in place")
 	_check(manager.request_pickup(1), "joined group can be picked up")
 	var before_group_move := first.current_position
@@ -114,12 +101,12 @@ func _run() -> void:
 	var below: PuzzlePieceState = manager.pieces[game.columns]
 	manager.request_place_from_bank(below.piece_id, first.current_position + Vector2(0, game.cell.y + 35))
 	_check(not manager.request_release(below.piece_id), "correct neighbor too far away does not join")
-	manager.request_move(below.piece_id, first.current_position + Vector2(3, game.cell.y + 2))
+	manager.request_move(below.piece_id, first.current_position + Vector2(3, first.piece_size.y + 2))
 	_check(manager.request_release(below.piece_id), "correct neighbor joins when nearly touching")
 	_check(manager.cluster_members(0).size() == 3, "new joint extends existing group")
-	manager.request_move(3, first.current_position + Vector2(game.cell.x * 3 + 2, 0))
 	var bridge: PuzzlePieceState = manager.pieces[2]
-	manager.request_place_from_bank(2, first.current_position + Vector2(game.cell.x * 2 + 3, 1))
+	manager.request_move(3, second.current_position + Vector2(second.piece_size.x + bridge.piece_size.x + 2, 0))
+	manager.request_place_from_bank(2, second.current_position + Vector2(second.piece_size.x + 3, 1))
 	_check(manager.request_release(bridge.piece_id), "bridge piece joins neighboring groups")
 	_check(manager.cluster_members(0).size() == 5 and wrong.cluster_id == first.cluster_id, "one release merges two groups")
 	var relative_before_spread := second.current_position - first.current_position
@@ -141,22 +128,52 @@ func _run() -> void:
 	var rotation_cell := Vector2(game.BOARD_SIZE.x / 8, game.BOARD_SIZE.y / 6)
 	rotated_manager.configure(rotation_states, rotation_cell, 8, 6)
 	rotated_manager.request_place_from_bank(0, Vector2(-2600, 1900))
-	rotated_manager.request_place_from_bank(1, Vector2(-2600, 1900) + Vector2(rotation_cell.x + 2, 1))
+	rotated_manager.request_place_from_bank(1, Vector2(-2600, 1900) + Vector2(rotation_states[0].piece_size.x + 2, 1))
 	rotated_manager.request_rotate(1)
 	_check(not rotated_manager.request_release(1), "mismatched rotation blocks joining")
 	for i in range(3):
 		rotated_manager.request_rotate(1)
 	_check(rotated_manager.request_release(1), "matching rotation permits joining")
+	# Pieces can differ in size now, so a joined pair's *centers* (not their top-left
+	# corners, which carry a per-piece size offset) are what simply rotates by 90
+	# degrees around the cluster pivot -- that's the invariant request_rotate actually
+	# guarantees, and what keeps their shared seam touching regardless of size.
+	var center0_before: Vector2 = rotation_states[0].current_position + rotation_states[0].piece_size * 0.5
+	var center1_before: Vector2 = rotation_states[1].current_position + rotation_states[1].piece_size * 0.5
 	rotated_manager.request_rotate(0)
 	_check(rotation_states[0].current_rotation == 90 and rotation_states[1].current_rotation == 90, "joined group rotates together")
-	var expected_rotated_offset := (rotation_states[1].correct_position - rotation_states[0].correct_position).rotated(PI * 0.5)
-	_check((rotation_states[1].current_position - rotation_states[0].current_position).distance_to(expected_rotated_offset) < 0.01, "rotated group keeps aligned seam")
+	var center0_after: Vector2 = rotation_states[0].current_position + rotation_states[0].piece_size * 0.5
+	var center1_after: Vector2 = rotation_states[1].current_position + rotation_states[1].piece_size * 0.5
+	var expected_center_delta := (center1_before - center0_before).rotated(PI * 0.5)
+	_check((center1_after - center0_after).distance_to(expected_center_delta) < 0.01, "rotated group keeps aligned seam")
 	var rotated_below: PuzzlePieceState = rotation_states[8]
 	var rotated_below_offset := (rotated_below.correct_position - rotation_states[0].correct_position).rotated(PI * 0.5)
 	rotated_manager.request_place_from_bank(8, rotation_states[0].current_position + rotated_below_offset + Vector2(2, 3))
 	rotated_manager.request_rotate(8)
 	_check(rotated_manager.request_release(8), "matching rotated edge joins group")
 	_check(rotated_manager.cluster_members(0).size() == 3, "rotated cluster expands")
+	# Ownership locking: required once more than one actor (a networked peer) can act on the board.
+	var ownership_states := PuzzleGenerator.generate(game.source, 8, 6, 52815, game.BOARD_SIZE)
+	var ownership_manager := PuzzleManager.new()
+	var ownership_cell := Vector2(game.BOARD_SIZE.x / 8, game.BOARD_SIZE.y / 6)
+	ownership_manager.configure(ownership_states, ownership_cell, 8, 6)
+	ownership_manager.request_place_from_bank(0, Vector2(-1000, 500), 1)
+	_check(ownership_manager.request_pickup(0, 1), "owner can re-pick up their own piece")
+	_check(not ownership_manager.request_pickup(0, 2), "a second player cannot grab an already-held piece")
+	_check(not ownership_manager.request_release(0, 2), "a non-owner cannot release someone else's piece")
+	_check(ownership_states[0].owner_peer_id == 1, "a rejected release leaves ownership unchanged")
+	ownership_manager.request_release(0, 1)
+	_check(ownership_states[0].owner_peer_id == 0, "the actual owner can release their piece")
+	_check(ownership_manager.request_pickup(0, 2), "once released, a different player can pick it up")
+	ownership_manager.request_place_from_bank(1, Vector2(-1000, 500) + Vector2(ownership_states[0].piece_size.x + 4, 3), 2)
+	ownership_manager.request_release(0, 2)
+	ownership_manager.request_release(1, 2)
+	_check(ownership_manager.cluster_members(0).size() == 2, "neighbors still join while ownership is enforced")
+	var joined_id: int = ownership_states[0].cluster_id
+	_check(ownership_manager.request_pickup(joined_id, 1), "player 1 can grab the newly joined cluster")
+	_check(not ownership_manager.request_pickup(joined_id, 2), "a joined cluster is held atomically; player 2 cannot grab any member")
+	ownership_manager.release_pieces_owned_by(1)
+	_check(ownership_states[0].owner_peer_id == 0 and ownership_states[1].owner_peer_id == 0, "release_pieces_owned_by frees every piece held by a disconnecting player")
 	game._start_puzzle(false)
 	var completion_anchor := Vector2(3100, -2250)
 	var base_correct: Vector2 = manager.pieces[0].correct_position
@@ -193,5 +210,5 @@ func _run() -> void:
 	_check(game.bank.header_scroll.size.x < 800, "bank controls fit narrow viewport with horizontal scroll")
 	_check(game.reference_panel.size.x <= 800, "reference panel fits narrow viewport")
 	if failures == 0:
-		print("SMOKE TEST PASSED: free clusters, wrong/close edge checks, group drag/spread/rotation/bridging/completion, 24/48/96 geometry and bank")
+		print("SMOKE TEST PASSED: free clusters, wrong/close edge checks, group drag/spread/rotation/bridging/completion, ownership locking, 24/48/96 geometry and bank")
 	quit(0 if failures == 0 else 1)
