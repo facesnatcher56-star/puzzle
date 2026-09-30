@@ -96,7 +96,9 @@ static func _jittered_boundaries(count: int, length: float, sub_seed: int) -> Pa
 # at a shared vertex -- built independently, possibly for a different piece entirely --
 # derives the exact same trim without any of them knowing about each other.
 static func _vertex_chamfer(r: int, c: int, rows: int, columns: int, seed_value: int, cell: Vector2) -> float:
-	if (r == 0 or r == rows) and (c == 0 or c == columns):
+	# Vertices on the board's perimeter stay crisp so every edge piece has a perfectly straight
+	# outer side and every corner piece a true square corner; only interior vertices are trimmed.
+	if r == 0 or r == rows or c == 0 or c == columns:
 		return 0.0
 	var vertex_rng := RandomNumberGenerator.new()
 	vertex_rng.seed = seed_value ^ (r * 92821 + c * 68917 + 104729)

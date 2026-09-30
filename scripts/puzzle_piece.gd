@@ -5,6 +5,8 @@ var data: PuzzlePieceState
 var texture_source: Texture2D
 var cell_size: Vector2
 var selected := false
+const SHADOW_OFFSET := Vector2(2, 3.5)
+const SOFT_SHADOW_OFFSET := Vector2(5, 8)
 var shadow: Polygon2D
 var soft_shadow: Polygon2D
 var rim: PieceRim
@@ -21,13 +23,12 @@ func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	soft_shadow = Polygon2D.new()
 	soft_shadow.polygon = data.outline
 	soft_shadow.color = Color(0.02, 0.03, 0.04, 0.22)
-	soft_shadow.position = Vector2(5, 8)
-	soft_shadow.scale = Vector2.ONE * 1.015
+	soft_shadow.position = SOFT_SHADOW_OFFSET
 	add_child(soft_shadow)
 	shadow = Polygon2D.new()
 	shadow.polygon = data.outline
 	shadow.color = Color(0.02, 0.03, 0.04, 0.42)
-	shadow.position = Vector2(2, 3.5)
+	shadow.position = SHADOW_OFFSET
 	add_child(shadow)
 	art = Polygon2D.new()
 	art.polygon = data.outline
@@ -70,8 +71,10 @@ func place_centered(center: Vector2, factor: float = 1.0) -> void:
 	scale = Vector2.ONE * factor
 	rotation_degrees = data.current_rotation
 	if rim != null:
-		# Keep the light fixed in the world (upper left) as the piece turns.
+		# Light and shadows stay fixed in the world (light from the upper left) however the piece is turned.
 		rim.set_light(Vector2(-0.6, -0.8).rotated(-rotation))
+		shadow.position = SHADOW_OFFSET.rotated(-rotation)
+		soft_shadow.position = SOFT_SHADOW_OFFSET.rotated(-rotation)
 	position = center - (cell_size * 0.5).rotated(rotation) * factor
 
 

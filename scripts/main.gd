@@ -91,6 +91,8 @@ var settings_fullscreen_picker: OptionButton
 var settings_resolution_picker: OptionButton
 var host_port_field: LineEdit
 var host_mode_picker: OptionButton
+var host_resume_picker: OptionButton
+var host_save_label: Label
 var host_status_label: Label
 var join_address_field: LineEdit
 var join_status_label: Label
@@ -627,7 +629,19 @@ func _build_lobby_host() -> void:
 	host_mode_picker = OptionButton.new()
 	host_mode_picker.add_item("Emberbound")
 	host_mode_picker.add_item("Random (no reference)")
+	host_mode_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host_mode_picker.item_selected.connect(func(_i: int): _refresh_host_saves())
 	mode_row.add_child(host_mode_picker)
+	var resume_row := HBoxContainer.new()
+	lobby_stack.add_child(resume_row)
+	var resume_label := Label.new()
+	resume_label.text = "Game"
+	resume_row.add_child(resume_label)
+	host_resume_picker = OptionButton.new()
+	host_resume_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	resume_row.add_child(host_resume_picker)
+	host_save_label = _lobby_caption("")
+	_refresh_host_saves()
 	var start_button := Button.new()
 	start_button.text = "Start Hosting"
 	start_button.pressed.connect(_on_start_hosting_pressed)
@@ -694,7 +708,7 @@ func _on_start_hosting_pressed() -> void:
 		return
 	lan.start_announcing(port, Callable(self, "_lan_label"))
 	_hide_lobby()
-	_begin_local_session(host_mode_picker.selected == 1)
+	_begin_local_session(host_mode_picker.selected == 1, host_resume_picker.selected == 0 and _save_for_mode(host_mode_picker.selected == 1).size() > 0)
 	_update_network_status()
 
 func _lan_label() -> String:
@@ -745,9 +759,36 @@ func _on_lan_game_pressed(address: String, port: int) -> void:
 		return
 	join_status_label.text = "Connecting..."
 
-func _begin_local_session(random_mode: bool) -> void:
+# Returns the saved puzzle for a mode, or {} if none (or it belongs to a different mode / is unusable).
+func _save_for_mode(random_mode: bool) -> Dictionary:
 	var saved := SaveManager.load_state(RANDOM_SAVE_PATH if random_mode else SaveManager.SAVE_PATH)
-	if not saved.is_empty() and _save_matches_mode(saved, random_mode):
+	if saved.is_empty() or not _save_matches_mode(saved, random_mode):
+		return {}
+	return saved
+
+func _describe_save(saved: Dictionary) -> String:
+	var placed := 0
+	for snap in saved.pieces:
+		if snap.on_table:
+			placed += 1
+	var seconds := int(saved.get("elapsed_ms", 0)) / 1000
+	return "%d of %d pieces placed  •  %d:%02d played" % [placed, saved.pieces.size(), seconds / 60, seconds % 60]
+
+# The host picks between continuing the last saved puzzle of the chosen mode or starting a fresh one.
+func _refresh_host_saves() -> void:
+	var saved := _save_for_mode(host_mode_picker.selected == 1)
+	host_resume_picker.clear()
+	if saved.is_empty():
+		host_resume_picker.add_item("Start new puzzle")
+		host_save_label.text = "No saved puzzle for this mode yet."
+	else:
+		host_resume_picker.add_item("Continue saved puzzle")
+		host_resume_picker.add_item("Start new puzzle")
+		host_save_label.text = "Saved: " + _describe_save(saved)
+
+func _begin_local_session(random_mode: bool, resume: bool = true) -> void:
+	var saved := _save_for_mode(random_mode) if resume else {}
+	if not saved.is_empty():
 		_restore_puzzle(saved)
 		return
 	if random_mode:
