@@ -368,24 +368,104 @@ func _build_lobby_ui() -> void:
 	lobby_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	lobby_overlay.visible = false
 	ui_root.add_child(lobby_overlay)
+	var backdrop := TextureRect.new()
+	backdrop.texture = SOURCE_IMAGE
+	backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	backdrop.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	backdrop.modulate = Color(0.45, 0.5, 0.55)
+	lobby_overlay.add_child(backdrop)
 	var shade := ColorRect.new()
-	shade.color = Color(0.02, 0.04, 0.05, 0.92)
+	shade.color = Color(0.03, 0.05, 0.08, 0.82)
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lobby_overlay.add_child(shade)
 	var lobby_panel := PanelContainer.new()
-	lobby_panel.anchor_left = 0.5
-	lobby_panel.anchor_right = 0.5
-	lobby_panel.anchor_top = 0.5
-	lobby_panel.anchor_bottom = 0.5
-	lobby_panel.offset_left = -220
-	lobby_panel.offset_right = 220
-	lobby_panel.offset_top = -170
-	lobby_panel.offset_bottom = 170
+	lobby_panel.set_anchors_preset(Control.PRESET_CENTER)
+	lobby_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	lobby_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	lobby_panel.custom_minimum_size = Vector2(460, 0)
+	lobby_panel.theme = _lobby_theme()
 	lobby_overlay.add_child(lobby_panel)
+	var margin := MarginContainer.new()
+	for side in ["left", "right"]:
+		margin.add_theme_constant_override("margin_" + side, 34)
+	for side in ["top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 28)
+	lobby_panel.add_child(margin)
 	lobby_stack = VBoxContainer.new()
 	lobby_stack.add_theme_constant_override("separation", 12)
-	lobby_panel.add_child(lobby_stack)
+	margin.add_child(lobby_stack)
 	_build_lobby_root()
+
+func _lobby_box(fill: Color, border: Color, border_width: int = 1, radius: int = 10) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.border_color = border
+	box.set_border_width_all(border_width)
+	box.set_corner_radius_all(radius)
+	box.content_margin_left = 16
+	box.content_margin_right = 16
+	box.content_margin_top = 11
+	box.content_margin_bottom = 11
+	return box
+
+func _lobby_theme() -> Theme:
+	var theme := Theme.new()
+	var gold := Color("e0b96a")
+	theme.set_stylebox("panel", "PanelContainer", _lobby_box(Color("121c24f2"), gold.darkened(0.25), 2, 16))
+	theme.set_stylebox("normal", "Button", _lobby_box(Color("1f3039"), Color("3d5661")))
+	theme.set_stylebox("hover", "Button", _lobby_box(Color("2b4452"), gold))
+	theme.set_stylebox("pressed", "Button", _lobby_box(Color("16242c"), gold.lightened(0.2)))
+	theme.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	theme.set_color("font_color", "Button", Color("eef0e6"))
+	theme.set_color("font_hover_color", "Button", Color("fff2cf"))
+	theme.set_font_size("font_size", "Button", 17)
+	theme.set_stylebox("normal", "LineEdit", _lobby_box(Color("0c141b"), Color("3d5661"), 1, 8))
+	theme.set_stylebox("focus", "LineEdit", _lobby_box(Color("0c141b"), gold, 1, 8))
+	theme.set_stylebox("normal", "OptionButton", _lobby_box(Color("1f3039"), Color("3d5661"), 1, 8))
+	theme.set_stylebox("hover", "OptionButton", _lobby_box(Color("2b4452"), gold, 1, 8))
+	theme.set_stylebox("pressed", "OptionButton", _lobby_box(Color("16242c"), gold, 1, 8))
+	theme.set_color("font_color", "Label", Color("c9d6d6"))
+	return theme
+
+func _lobby_heading(text: String, subtitle: String = "") -> void:
+	var title := Label.new()
+	title.text = text
+	title.add_theme_font_size_override("font_size", 34)
+	title.add_theme_color_override("font_color", Color("f4e5c3"))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_stack.add_child(title)
+	if subtitle != "":
+		var sub := Label.new()
+		sub.text = subtitle
+		sub.add_theme_font_size_override("font_size", 14)
+		sub.add_theme_color_override("font_color", Color("8fa6a8"))
+		sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lobby_stack.add_child(sub)
+	var rule := ColorRect.new()
+	rule.color = Color("e0b96a66")
+	rule.custom_minimum_size.y = 2
+	lobby_stack.add_child(rule)
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 4
+	lobby_stack.add_child(gap)
+
+func _lobby_button(text: String, detail: String, callback: Callable) -> Button:
+	var button := Button.new()
+	button.text = text if detail == "" else "%s\n%s" % [text, detail]
+	button.custom_minimum_size.y = 52 if detail == "" else 66
+	button.pressed.connect(callback)
+	lobby_stack.add_child(button)
+	return button
+
+func _lobby_caption(text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_color_override("font_color", Color("8fa6a8"))
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	lobby_stack.add_child(label)
+	return label
 
 func _show_lobby() -> void:
 	_build_lobby_root()
@@ -402,40 +482,24 @@ func _clear_lobby_stack() -> void:
 func _build_lobby_root() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = false
-	var title := Label.new()
-	title.text = "JIGSAW"
-	title.add_theme_font_size_override("font_size", 20)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lobby_stack.add_child(title)
-	if SaveManager.has_save() or SaveManager.has_save(RANDOM_SAVE_PATH):
-		var hint := Label.new()
-		hint.text = "A puzzle in progress will resume automatically."
-		hint.autowrap_mode = TextServer.AUTOWRAP_WORD
-		lobby_stack.add_child(hint)
-	var solo_button := Button.new()
-	solo_button.text = "Play Solo (Emberbound)"
-	solo_button.pressed.connect(_on_solo_pressed)
-	lobby_stack.add_child(solo_button)
-	var random_button := Button.new()
-	random_button.text = "Random Puzzle (no reference)"
-	random_button.pressed.connect(_on_random_pressed)
-	lobby_stack.add_child(random_button)
-	var host_button := Button.new()
-	host_button.text = "Host Game"
-	host_button.pressed.connect(_build_lobby_host)
-	lobby_stack.add_child(host_button)
-	var join_button := Button.new()
-	join_button.text = "Join Game"
-	join_button.pressed.connect(_build_lobby_join)
-	lobby_stack.add_child(join_button)
+	_lobby_heading("JIGSAW", "Piece it together. Alone or with friends.")
+	_lobby_button("Emberbound", "Classic artwork  •  with reference image", _on_solo_pressed)
+	_lobby_button("Random Puzzle", "A surprise picture  •  no reference", _on_random_pressed)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	lobby_stack.add_child(row)
+	for entry in [["Host Game", _build_lobby_host], ["Join Game", _build_lobby_join]]:
+		var button := Button.new()
+		button.text = entry[0]
+		button.custom_minimum_size.y = 52
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.pressed.connect(entry[1])
+		row.add_child(button)
 
 func _build_lobby_host() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = true
-	var title := Label.new()
-	title.text = "HOST GAME"
-	title.add_theme_font_size_override("font_size", 18)
-	lobby_stack.add_child(title)
+	_lobby_heading("HOST GAME", "Others on your Wi-Fi will see it automatically")
 	var port_row := HBoxContainer.new()
 	lobby_stack.add_child(port_row)
 	var port_label := Label.new()
@@ -470,14 +534,7 @@ func _build_lobby_host() -> void:
 func _build_lobby_join() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = true
-	var title := Label.new()
-	title.text = "JOIN GAME"
-	title.add_theme_font_size_override("font_size", 18)
-	lobby_stack.add_child(title)
-	var games_label := Label.new()
-	games_label.text = "GAMES ON THIS NETWORK"
-	games_label.add_theme_font_size_override("font_size", 12)
-	lobby_stack.add_child(games_label)
+	_lobby_heading("JOIN GAME", "Games found on this network")
 	join_games_status = Label.new()
 	join_games_status.text = "Searching..."
 	join_games_status.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -486,6 +543,7 @@ func _build_lobby_join() -> void:
 	lobby_stack.add_child(join_games_list)
 	var divider := Label.new()
 	divider.text = "— or enter an address —"
+	divider.add_theme_color_override("font_color", Color("8fa6a8"))
 	divider.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lobby_stack.add_child(divider)
 	join_address_field = LineEdit.new()
