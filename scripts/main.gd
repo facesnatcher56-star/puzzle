@@ -14,7 +14,6 @@ const RANDOM_IMAGES := {
 }
 # Grids for the 4:3 random artwork; chosen so cells stay close to square.
 const RANDOM_SIZES := [Vector2i(6, 4), Vector2i(8, 6), Vector2i(12, 9), Vector2i(18, 14)]
-const RANDOM_SAVE_PATH := "user://autosave_random.json"
 
 @onready var camera: Camera2D = $Camera2D
 @onready var piece_layer: Node2D = $Pieces
@@ -91,9 +90,11 @@ var in_game_menu := false # the lobby overlay doubles as the Esc/pause menu whil
 var settings_fullscreen_picker: OptionButton
 var settings_resolution_picker: OptionButton
 var host_port_field: LineEdit
-var host_mode_picker: OptionButton
-var host_resume_picker: OptionButton
+var host_game_picker: OptionButton
+var host_entries: Array = [] # parallel to host_game_picker items: {random} for new games, {slot} for saved ones
 var host_save_label: Label
+var save_slot := "" # file slot the running puzzle autosaves into; "" while a client (clients never save)
+var pause_save_button: Button
 var host_status_label: Label
 var join_address_field: LineEdit
 var join_status_label: Label
@@ -103,6 +104,7 @@ var join_games_status: Label
 var lan: LanDiscovery
 
 func _ready() -> void:
+	SaveManager.migrate_legacy()
 	DisplaySettings.apply_saved()
 	_apply_mobile_scale()
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
@@ -177,6 +179,8 @@ func _draw() -> void:
 func _start_puzzle(new_seed: bool) -> void:
 	if new_seed:
 		seed_value += 1
+		if not network.is_client():
+			save_slot = SaveManager.new_slot_id()
 		if image_id != "":
 			_apply_image(_pick_random_image())
 	for child in piece_layer.get_children():
@@ -511,12 +515,20 @@ func _clear_lobby_stack() -> void:
 		child.queue_free()
 
 func _build_pause_root() -> void:
-	_lobby_heading("PAUSED", "Your progress saves automatically")
+	_lobby_heading("PAUSED", "Progress also saves automatically")
 	_lobby_button("Resume", "", _hide_lobby)
+	pause_save_button = null
+	if not network.is_client():
+		pause_save_button = _lobby_button("Save Game", "", _on_save_pressed)
 	_lobby_button("Settings", "", _build_settings)
 	_lobby_button("Main Menu", "", _on_main_menu_pressed)
 	if not OS.has_feature("mobile"):
 		_lobby_button("Quit Game", "", _on_quit_pressed)
+
+func _on_save_pressed() -> void:
+	_write_save()
+	if pause_save_button != null:
+		pause_save_button.text = "Saved ✓"
 
 func _on_main_menu_pressed() -> void:
 	if (network.is_solo() or network.is_host()) and save_dirty:
@@ -583,8 +595,13 @@ func _build_lobby_root() -> void:
 		_build_pause_root()
 		return
 	_lobby_heading("JIGSAW", "Piece it together. Alone or with friends.")
-	_lobby_button("Emberbound", "Classic artwork  •  with reference image", _on_solo_pressed)
-	_lobby_button("Random Puzzle", "A surprise picture  •  no reference", _on_random_pressed)
+	var saves := SaveManager.list_saves()
+	if not saves.is_empty():
+		var latest: Dictionary = saves[0].data
+		var slot: String = saves[0].slot
+		_lobby_button("Continue", "%s  •  %s" % [_save_title(latest), _save_detail(latest)], func(): _on_load_slot_pressed(slot))
+	_lobby_button("New Game", "Start a fresh puzzle", _build_lobby_new)
+	_lobby_button("Load Game", "%d saved puzzle%s" % [saves.size(), "" if saves.size() == 1 else "s"] if not saves.is_empty() else "No saved puzzles yet", _build_lobby_load)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	lobby_stack.add_child(row)
@@ -609,6 +626,62 @@ func _build_lobby_root() -> void:
 		button.pressed.connect(entry[1])
 		extras.add_child(button)
 
+func _build_lobby_new() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	_lobby_heading("NEW GAME", "Choose a puzzle")
+	_lobby_button("Emberbound", "Classic artwork  •  with reference image", _on_solo_pressed)
+	_lobby_button("Random Puzzle", "A surprise picture  •  no reference", _on_random_pressed)
+	var back := _lobby_button("Back", "", _build_lobby_root)
+	back.custom_minimum_size.y = 46
+
+func _build_lobby_load() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	_lobby_heading("LOAD GAME", "Pick up where you left off")
+	var saves := SaveManager.list_saves()
+	if saves.is_empty():
+		_lobby_caption("No saved puzzles yet. Start a new game and it will be saved here automatically.")
+	else:
+		var scroll := ScrollContainer.new()
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		scroll.custom_minimum_size.y = minf(saves.size() * 74.0, 330.0)
+		lobby_stack.add_child(scroll)
+		var list := VBoxContainer.new()
+		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		list.add_theme_constant_override("separation", 8)
+		scroll.add_child(list)
+		for entry in saves:
+			var slot: String = entry.slot
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			list.add_child(row)
+			var load_button := Button.new()
+			load_button.text = "%s\n%s" % [_save_title(entry.data), _save_detail(entry.data)]
+			load_button.custom_minimum_size.y = 66
+			load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			load_button.pressed.connect(_on_load_slot_pressed.bind(slot))
+			row.add_child(load_button)
+			var delete_button := Button.new()
+			delete_button.text = "Delete"
+			delete_button.custom_minimum_size = Vector2(76, 66)
+			delete_button.pressed.connect(_on_delete_slot_pressed.bind(slot, delete_button))
+			row.add_child(delete_button)
+	var back := _lobby_button("Back", "", _build_lobby_root)
+	back.custom_minimum_size.y = 46
+
+# Two-step delete: the first press arms the button, the second removes the save.
+func _on_delete_slot_pressed(slot: String, button: Button) -> void:
+	if button.text != "Sure?":
+		button.text = "Sure?"
+		return
+	SaveManager.delete_slot(slot)
+	_build_lobby_load()
+
+func _on_load_slot_pressed(slot: String) -> void:
+	if _load_session(slot):
+		_hide_lobby()
+
 func _build_lobby_host() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = true
@@ -622,27 +695,26 @@ func _build_lobby_host() -> void:
 	host_port_field.text = str(NetworkSession.DEFAULT_PORT)
 	host_port_field.custom_minimum_size.x = 100
 	port_row.add_child(host_port_field)
-	var mode_row := HBoxContainer.new()
-	lobby_stack.add_child(mode_row)
-	var mode_label := Label.new()
-	mode_label.text = "Puzzle"
-	mode_row.add_child(mode_label)
-	host_mode_picker = OptionButton.new()
-	host_mode_picker.add_item("Emberbound")
-	host_mode_picker.add_item("Random (no reference)")
-	host_mode_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	host_mode_picker.item_selected.connect(func(_i: int): _refresh_host_saves())
-	mode_row.add_child(host_mode_picker)
-	var resume_row := HBoxContainer.new()
-	lobby_stack.add_child(resume_row)
-	var resume_label := Label.new()
-	resume_label.text = "Game"
-	resume_row.add_child(resume_label)
-	host_resume_picker = OptionButton.new()
-	host_resume_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	resume_row.add_child(host_resume_picker)
+	var game_row := VBoxContainer.new()
+	lobby_stack.add_child(game_row)
+	var game_label := Label.new()
+	game_label.text = "Game"
+	game_row.add_child(game_label)
+	host_game_picker = OptionButton.new()
+	host_game_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host_game_picker.clip_text = true
+	game_row.add_child(host_game_picker)
 	host_save_label = _lobby_caption("")
-	_refresh_host_saves()
+	host_entries = [{"random": false}, {"random": true}]
+	host_game_picker.add_item("New: Emberbound")
+	host_game_picker.add_item("New: Random Puzzle")
+	for entry in SaveManager.list_saves():
+		host_entries.append({"slot": entry.slot, "data": entry.data})
+		host_game_picker.add_item("Saved: %s  •  %s" % [_save_title(entry.data), _save_detail(entry.data).get_slice("  •  ", 0)])
+	host_game_picker.item_selected.connect(_on_host_game_selected)
+	# Default to the most recent saved game when there is one.
+	host_game_picker.select(2 if host_entries.size() > 2 else 0)
+	_on_host_game_selected(host_game_picker.selected)
 	var start_button := Button.new()
 	start_button.text = "Start Hosting"
 	start_button.pressed.connect(_on_start_hosting_pressed)
@@ -692,11 +764,18 @@ func _build_lobby_join() -> void:
 
 func _on_solo_pressed() -> void:
 	_hide_lobby()
-	_begin_local_session(false)
+	_new_session(false)
 
 func _on_random_pressed() -> void:
 	_hide_lobby()
-	_begin_local_session(true)
+	_new_session(true)
+
+func _on_host_game_selected(index: int) -> void:
+	var entry: Dictionary = host_entries[index]
+	if entry.has("slot"):
+		host_save_label.text = "Continues exactly as you left it.  " + _save_detail(entry.data)
+	else:
+		host_save_label.text = "Starts a brand new puzzle."
 
 func _on_start_hosting_pressed() -> void:
 	var port := int(host_port_field.text)
@@ -709,7 +788,9 @@ func _on_start_hosting_pressed() -> void:
 		return
 	lan.start_announcing(port, Callable(self, "_lan_label"))
 	_hide_lobby()
-	_begin_local_session(host_mode_picker.selected == 1, host_resume_picker.selected == 0 and _save_for_mode(host_mode_picker.selected == 1).size() > 0)
+	var entry: Dictionary = host_entries[host_game_picker.selected]
+	if not entry.has("slot") or not _load_session(entry.slot):
+		_new_session(bool(entry.get("random", false)))
 	_update_network_status()
 
 func _lan_label() -> String:
@@ -760,53 +841,44 @@ func _on_lan_game_pressed(address: String, port: int) -> void:
 		return
 	join_status_label.text = "Connecting..."
 
-# Returns the saved puzzle for a mode, or {} if none (or it belongs to a different mode / is unusable).
-func _save_for_mode(random_mode: bool) -> Dictionary:
-	var saved := SaveManager.load_state(RANDOM_SAVE_PATH if random_mode else SaveManager.SAVE_PATH)
-	if saved.is_empty() or not _save_matches_mode(saved, random_mode):
-		return {}
-	return saved
-
-func _describe_save(saved: Dictionary) -> String:
-	var placed := 0
-	for snap in saved.pieces:
-		if snap.on_table:
-			placed += 1
-	var seconds := int(saved.get("elapsed_ms", 0)) / 1000
-	return "%d of %d pieces placed  •  %d:%02d played" % [placed, saved.pieces.size(), seconds / 60, seconds % 60]
-
-# The host picks between continuing the last saved puzzle of the chosen mode or starting a fresh one.
-func _refresh_host_saves() -> void:
-	var saved := _save_for_mode(host_mode_picker.selected == 1)
-	host_resume_picker.clear()
-	if saved.is_empty():
-		host_resume_picker.add_item("Start new puzzle")
-		host_save_label.text = "No saved puzzle for this mode yet."
-	else:
-		host_resume_picker.add_item("Continue saved puzzle")
-		host_resume_picker.add_item("Start new puzzle")
-		host_save_label.text = "Saved: " + _describe_save(saved)
-
-func _begin_local_session(random_mode: bool, resume: bool = true) -> void:
-	var saved := _save_for_mode(random_mode) if resume else {}
-	if not saved.is_empty():
-		_restore_puzzle(saved)
-		return
+func _new_session(random_mode: bool) -> void:
+	save_slot = SaveManager.new_slot_id()
 	if random_mode:
 		seed_value = randi_range(1, 1000000)
 		_apply_image(_pick_random_image())
 	else:
 		_apply_image("")
 	_start_puzzle(false)
+	_write_save() # list it under Load Game straight away
 
-func _save_matches_mode(saved: Dictionary, random_mode: bool) -> bool:
+# Loads a saved puzzle into this session; false if the file is missing, damaged, or names artwork this build lacks.
+func _load_session(slot: String) -> bool:
+	var saved := SaveManager.load_state(SaveManager.slot_path(slot))
 	var saved_image := str(saved.get("image_id", ""))
-	if not random_mode:
-		return saved_image == ""
-	return RANDOM_IMAGES.has(saved_image)
+	if saved.is_empty() or (saved_image != "" and not RANDOM_IMAGES.has(saved_image)):
+		return false
+	save_slot = slot
+	_restore_puzzle(saved)
+	return true
 
-func _save_path() -> String:
-	return RANDOM_SAVE_PATH if image_id != "" else SaveManager.SAVE_PATH
+func _save_title(saved: Dictionary) -> String:
+	var saved_image := str(saved.get("image_id", ""))
+	return "Emberbound" if saved_image == "" else "Random  •  " + saved_image.capitalize()
+
+func _save_detail(saved: Dictionary) -> String:
+	var placed := 0
+	for snap in saved.pieces:
+		if snap.on_table:
+			placed += 1
+	var seconds := int(saved.get("elapsed_ms", 0)) / 1000
+	var detail := "%d of %d placed  •  %d:%02d played" % [placed, saved.pieces.size(), seconds / 60, seconds % 60]
+	var stamp := int(saved.get("saved_at", 0))
+	if stamp > 0:
+		var local := Time.get_datetime_dict_from_unix_time(stamp + int(Time.get_time_zone_from_system().bias) * 60)
+		var months := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+		var hour12: int = (local.hour + 11) % 12 + 1
+		detail += "  •  %s %d, %d:%02d %s" % [months[local.month - 1], local.day, hour12, local.minute, "AM" if local.hour < 12 else "PM"]
+	return detail
 
 # Never repeats the image currently on the table, so "New puzzle" is always a visible change.
 func _pick_random_image() -> String:
@@ -866,6 +938,7 @@ func _on_server_disconnected() -> void:
 		join_status_label.text = "Disconnected from host."
 
 func _on_full_state_received(config: Dictionary, snapshots: Array) -> void:
+	save_slot = "" # the host owns this puzzle's save, never this client
 	var saved := config.duplicate()
 	saved["pieces"] = snapshots
 	_hide_lobby()
@@ -951,6 +1024,8 @@ func _on_autosave_tick() -> void:
 		_write_save()
 
 func _write_save() -> void:
+	if save_slot == "":
+		return
 	var piece_snapshots := []
 	for piece in manager.pieces:
 		var snap := piece.snapshot()
@@ -958,7 +1033,7 @@ func _write_save() -> void:
 		piece_snapshots.append(snap)
 	var data := _puzzle_config()
 	data["pieces"] = piece_snapshots
-	SaveManager.save(data, _save_path())
+	SaveManager.save(data, SaveManager.slot_path(save_slot))
 	save_dirty = false
 	last_saved_msec = Time.get_ticks_msec()
 

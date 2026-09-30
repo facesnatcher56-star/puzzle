@@ -11,11 +11,11 @@ func _check(ok: bool, message: String) -> void:
 		push_error("RANDOM MODE TEST FAILED: " + message)
 
 func _run() -> void:
+	SaveManager.save_dir = "user://test_saves"
 	var game = load("res://scenes/main.tscn").instantiate()
 	root.add_child(game)
 	game._hide_lobby()
-	SaveManager.delete_save(game.RANDOM_SAVE_PATH)
-	game._begin_local_session(true)
+	game._new_session(true)
 	await process_frame
 	_check(game.RANDOM_IMAGES.has(game.image_id), "random mode picks one of the bundled images")
 	_check(game.board_size == game.source.get_size(), "board matches the picked image")
@@ -30,17 +30,26 @@ func _run() -> void:
 		_check(game.image_id != before, "new puzzle switches image")
 		seen[game.image_id] = true
 	_check(seen.size() >= 3, "several different images appear")
-	# Save/restore round trip keeps the image.
+	# Saving: every new puzzle gets its own slot, listed newest first, and loads back with its image.
+	for entry in SaveManager.list_saves():
+		SaveManager.delete_slot(entry.slot)
 	game._on_bank_action("spread")
 	game._write_save()
 	var saved_id: String = game.image_id
-	var saved := SaveManager.load_state(game.RANDOM_SAVE_PATH)
-	_check(str(saved.image_id) == saved_id, "save records the image")
-	game._begin_local_session(false)
+	var slot: String = game.save_slot
+	var listed := SaveManager.list_saves()
+	_check(listed.size() >= 1 and listed[0].slot == slot, "new puzzle appears in the save list")
+	_check(str(listed[0].data.image_id) == saved_id, "save records the image")
+	game._new_session(false)
 	_check(game.image_id == "" and game.source.get_size() == Vector2(1122, 1402), "classic mode is unaffected")
+	_check(game.save_slot != slot, "a new game gets a new slot")
 	_check(game.bank.buttons["reference"].visible, "reference returns in classic mode")
-	game._begin_local_session(true)
-	_check(game.image_id == saved_id, "random mode resumes its saved image")
+	_check(SaveManager.list_saves().size() == 2, "both puzzles are listed")
+	_check(game._load_session(slot), "loading a saved slot succeeds")
+	_check(game.image_id == saved_id and game.save_slot == slot, "load restores the image and keeps autosaving into the same slot")
+	_check(not game._load_session("missing_slot"), "loading a missing slot fails cleanly")
+	SaveManager.delete_slot(slot)
+	_check(SaveManager.list_saves().size() == 1, "deleting a slot removes it from the list")
 	var esc := InputEventKey.new()
 	esc.keycode = KEY_ESCAPE
 	esc.pressed = true
@@ -52,6 +61,7 @@ func _run() -> void:
 	_check(game.lobby_overlay.visible and game.in_game_menu and not game.lobby_sub_open, "Esc in settings returns to the pause menu")
 	game._input(esc)
 	_check(not game.lobby_overlay.visible, "Esc on the pause menu resumes")
-	SaveManager.delete_save(game.RANDOM_SAVE_PATH)
+	for entry in SaveManager.list_saves():
+		SaveManager.delete_slot(entry.slot)
 	print("random mode test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)

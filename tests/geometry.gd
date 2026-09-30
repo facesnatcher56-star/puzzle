@@ -55,7 +55,8 @@ func _run() -> void:
 	var game = load("res://scenes/main.tscn").instantiate()
 	root.add_child(game)
 	game._hide_lobby()
-	game._begin_local_session(true, false)
+	SaveManager.save_dir = "user://test_saves"
+	game._new_session(true)
 	await process_frame
 	for id in [0, 5, 100]:
 		game._place_bank_piece(id, Vector2(-200 + id, 50))
@@ -80,5 +81,7 @@ func _run() -> void:
 	_check(game.preview_panel.visible and game.hover_table_id == 5, "hovering a board piece shows its enlarged preview")
 	game._update_table_hover(Vector2(5, 300))
 	_check(not game.preview_panel.visible and game.hover_table_id == -1, "moving off the piece hides the preview")
+	for entry in SaveManager.list_saves():
+		SaveManager.delete_slot(entry.slot)
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)
