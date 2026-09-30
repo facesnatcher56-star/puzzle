@@ -41,6 +41,17 @@ func _run() -> void:
 	_check(game.bank.buttons["reference"].visible, "reference returns in classic mode")
 	game._begin_local_session(true)
 	_check(game.image_id == saved_id, "random mode resumes its saved image")
+	var esc := InputEventKey.new()
+	esc.keycode = KEY_ESCAPE
+	esc.pressed = true
+	game._hide_lobby()
+	game._input(esc)
+	_check(game.lobby_overlay.visible and game.in_game_menu, "Esc opens the pause menu")
+	game._build_settings()
+	game._input(esc)
+	_check(game.lobby_overlay.visible and game.in_game_menu and not game.lobby_sub_open, "Esc in settings returns to the pause menu")
+	game._input(esc)
+	_check(not game.lobby_overlay.visible, "Esc on the pause menu resumes")
 	SaveManager.delete_save(game.RANDOM_SAVE_PATH)
 	print("random mode test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)

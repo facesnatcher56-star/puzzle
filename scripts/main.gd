@@ -86,6 +86,9 @@ var leave_button: Button
 var lobby_overlay: Control
 var lobby_stack: VBoxContainer
 var lobby_sub_open := false
+var in_game_menu := false # the lobby overlay doubles as the Esc/pause menu while a puzzle is open
+var settings_fullscreen_picker: OptionButton
+var settings_resolution_picker: OptionButton
 var host_port_field: LineEdit
 var host_mode_picker: OptionButton
 var host_status_label: Label
@@ -97,6 +100,7 @@ var join_games_status: Label
 var lan: LanDiscovery
 
 func _ready() -> void:
+	DisplaySettings.apply_saved()
 	_apply_mobile_scale()
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	if source == null:
@@ -134,12 +138,10 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
-		if reference_overlay != null and reference_overlay.visible:
-			reference_overlay.visible = false
-		elif lobby_overlay != null and lobby_overlay.visible and lobby_sub_open:
-			_build_lobby_root()
-		else:
+		if lobby_overlay != null and lobby_overlay.visible and not lobby_sub_open and not in_game_menu:
 			get_tree().quit()
+		else:
+			_on_escape()
 	elif what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		# Android may kill the app without a clean quit after backgrounding, and focus-out
 		# fires more reliably across OEM skins than the pause notification alone.
@@ -468,8 +470,34 @@ func _lobby_caption(text: String) -> Label:
 	return label
 
 func _show_lobby() -> void:
+	in_game_menu = false
 	_build_lobby_root()
 	lobby_overlay.visible = true
+
+func _show_pause_menu() -> void:
+	# Drop anything mid-drag so a piece isn't left glued to the cursor behind the menu.
+	if dragging_table_id >= 0:
+		network.request_release(dragging_table_id)
+		_set_cluster_z(dragging_table_id, 0)
+		dragging_table_id = -1
+	touch_table_id = -1
+	bank_press_id = -1
+	_clear_ghost()
+	_hide_preview()
+	in_game_menu = true
+	_build_lobby_root()
+	lobby_overlay.visible = true
+
+func _on_escape() -> void:
+	if reference_overlay.visible:
+		reference_overlay.visible = false
+	elif lobby_overlay.visible:
+		if lobby_sub_open:
+			_build_lobby_root()
+		elif in_game_menu:
+			_hide_lobby()
+	else:
+		_show_pause_menu()
 
 func _hide_lobby() -> void:
 	lobby_overlay.visible = false
@@ -479,9 +507,78 @@ func _clear_lobby_stack() -> void:
 		lobby_stack.remove_child(child)
 		child.queue_free()
 
+func _build_pause_root() -> void:
+	_lobby_heading("PAUSED", "Your progress saves automatically")
+	_lobby_button("Resume", "", _hide_lobby)
+	_lobby_button("Settings", "", _build_settings)
+	_lobby_button("Main Menu", "", _on_main_menu_pressed)
+	if not OS.has_feature("mobile"):
+		_lobby_button("Quit Game", "", _on_quit_pressed)
+
+func _on_main_menu_pressed() -> void:
+	if (network.is_solo() or network.is_host()) and save_dirty:
+		_write_save()
+	_on_leave_pressed()
+
+func _on_quit_pressed() -> void:
+	if (network.is_solo() or network.is_host()) and save_dirty:
+		_write_save()
+	get_tree().quit()
+
+func _build_settings() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	_lobby_heading("SETTINGS", "Display")
+	if not DisplaySettings.is_supported():
+		_lobby_caption("Window and resolution options are available on the desktop version.")
+	else:
+		var saved := DisplaySettings.load_settings()
+		settings_fullscreen_picker = OptionButton.new()
+		settings_fullscreen_picker.add_item("Windowed")
+		settings_fullscreen_picker.add_item("Fullscreen")
+		settings_fullscreen_picker.select(1 if saved.fullscreen else 0)
+		settings_resolution_picker = OptionButton.new()
+		var saved_size := Vector2i(saved.width, saved.height)
+		var resolutions := DisplaySettings.available_resolutions()
+		var best := 0
+		for i in range(resolutions.size()):
+			settings_resolution_picker.add_item("%d x %d" % [resolutions[i].x, resolutions[i].y])
+			if absi(resolutions[i].x * resolutions[i].y - saved_size.x * saved_size.y) < absi(resolutions[best].x * resolutions[best].y - saved_size.x * saved_size.y):
+				best = i
+		settings_resolution_picker.select(best)
+		settings_resolution_picker.disabled = saved.fullscreen
+		settings_fullscreen_picker.item_selected.connect(func(_i: int): _apply_display_choice())
+		settings_resolution_picker.item_selected.connect(func(_i: int): _apply_display_choice())
+		_settings_row("Window", settings_fullscreen_picker)
+		_settings_row("Resolution", settings_resolution_picker)
+		_lobby_caption("Resolution applies to windowed mode. Fullscreen uses your monitor's native resolution.")
+	var back := _lobby_button("Back", "", _build_lobby_root)
+	back.custom_minimum_size.y = 46
+
+func _settings_row(label_text: String, picker: OptionButton) -> void:
+	var row := HBoxContainer.new()
+	lobby_stack.add_child(row)
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size.x = 120
+	row.add_child(label)
+	picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(picker)
+
+func _apply_display_choice() -> void:
+	var fullscreen := settings_fullscreen_picker.selected == 1
+	var resolutions := DisplaySettings.available_resolutions()
+	var size: Vector2i = resolutions[clampi(settings_resolution_picker.selected, 0, resolutions.size() - 1)]
+	settings_resolution_picker.disabled = fullscreen
+	DisplaySettings.save_settings(fullscreen, size)
+	DisplaySettings.apply(fullscreen, size)
+
 func _build_lobby_root() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = false
+	if in_game_menu:
+		_build_pause_root()
+		return
 	_lobby_heading("JIGSAW", "Piece it together. Alone or with friends.")
 	_lobby_button("Emberbound", "Classic artwork  •  with reference image", _on_solo_pressed)
 	_lobby_button("Random Puzzle", "A surprise picture  •  no reference", _on_random_pressed)
@@ -495,6 +592,19 @@ func _build_lobby_root() -> void:
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.pressed.connect(entry[1])
 		row.add_child(button)
+	var extras := HBoxContainer.new()
+	extras.add_theme_constant_override("separation", 12)
+	lobby_stack.add_child(extras)
+	var extra_entries := [["Settings", _build_settings]]
+	if not OS.has_feature("mobile"):
+		extra_entries.append(["Quit", _on_quit_pressed])
+	for entry in extra_entries:
+		var button := Button.new()
+		button.text = entry[0]
+		button.custom_minimum_size.y = 46
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.pressed.connect(entry[1])
+		extras.add_child(button)
 
 func _build_lobby_host() -> void:
 	_clear_lobby_stack()
@@ -686,6 +796,8 @@ func _apply_image(id: String) -> void:
 	_update_reference_image_layout()
 
 func _on_leave_pressed() -> void:
+	if network.is_client():
+		save_dirty = false # the host's puzzle must never be written to this player's own save
 	lan.stop()
 	network.stop()
 	_update_network_status()
@@ -705,6 +817,7 @@ func _on_connection_failed(reason: String) -> void:
 		join_status_label.text = "%s — check the address/port and that the host's router is forwarding UDP." % reason
 
 func _on_server_disconnected() -> void:
+	save_dirty = false
 	_apply_role_restrictions()
 	_show_lobby()
 	if join_status_label != null:
@@ -1050,8 +1163,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
-			reference_overlay.visible = false
-		elif event.keycode == KEY_R and rotation_enabled:
+			_on_escape()
+			return
+		elif event.keycode == KEY_R and rotation_enabled and not lobby_overlay.visible:
 			_rotate_selected()
 	if lobby_overlay.visible:
 		return

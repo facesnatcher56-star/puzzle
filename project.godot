@@ -45,6 +45,9 @@ common/default_scroll_deadzone=12
 
 [rendering]
 
+anti_aliasing/quality/msaa_2d=2
+textures/default_filters/anisotropic_filtering_level=4
+
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
