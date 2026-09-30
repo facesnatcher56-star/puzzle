@@ -45,6 +45,7 @@ var touch_last := Vector2.ZERO
 var touch_panning := false
 var pinch_distance := 0.0
 var bank_scrolling := false
+var hover_table_id := -1
 var rotation_enabled := true
 
 var network: NetworkSession
@@ -1140,21 +1141,48 @@ func _on_bank_pressed(piece_id: int, screen_position: Vector2) -> void:
 
 func _show_preview(piece_id: int, screen_position: Vector2) -> void:
 	var piece := manager.get_piece(piece_id)
-	if piece == null or piece.is_on_table:
+	if piece == null:
 		return
 	if preview_view != null:
 		preview_view.queue_free()
 	preview_view = PIECE_SCENE.instantiate()
 	preview_panel.add_child(preview_view)
 	preview_view.setup(piece, source, piece.piece_size)
-	var factor := minf(213.0 / piece.piece_size.x, 213.0 / piece.piece_size.y)
+	var factor := minf(170.0 / piece.piece_size.x, 170.0 / piece.piece_size.y)
 	preview_view.place_centered(Vector2(139, 121), factor)
-	var width := get_viewport_rect().size.x
-	preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
+	_position_preview(piece.is_on_table, screen_position)
 	preview_panel.visible = true
 	preview_panel.move_to_front()
 
+func _position_preview(on_table: bool, screen_position: Vector2) -> void:
+	var width := get_viewport_rect().size.x
+	if on_table:
+		# Hovering a piece on the board: float the enlarged view beside the cursor instead of above the bank.
+		var x := screen_position.x + 32
+		if x + 278 > width - 8:
+			x = screen_position.x - 32 - 278
+		var max_y := maxf(60.0, bank.position.y - 266.0)
+		preview_panel.position = Vector2(clampf(x, 8, width - 286), clampf(screen_position.y - 129, 60, max_y))
+	else:
+		preview_panel.position = Vector2(clampf(screen_position.x - 139, 8, width - 286), bank.position.y - 270)
+
+func _update_table_hover(screen_position: Vector2) -> void:
+	var piece_id := -1
+	var blocked := lobby_overlay.visible or (reference_overlay.visible and _reference_window_rect().has_point(screen_position))
+	if not blocked and _is_table_screen(screen_position):
+		piece_id = _pick_table_piece(_screen_to_world(screen_position))
+	if piece_id < 0:
+		if hover_table_id >= 0:
+			_hide_preview()
+		return
+	if piece_id != hover_table_id:
+		_show_preview(piece_id, screen_position)
+		hover_table_id = piece_id
+	elif preview_panel.visible:
+		_position_preview(true, screen_position)
+
 func _hide_preview() -> void:
+	hover_table_id = -1
 	if preview_panel:
 		preview_panel.visible = false
 	if preview_view:
@@ -1299,8 +1327,12 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 		return
 	if mouse_panning:
 		camera.position -= event.relative / camera.zoom.x
+		_hide_preview()
 	elif dragging_table_id >= 0:
 		network.request_move(dragging_table_id, _screen_to_world(event.position) - drag_offset)
+		_hide_preview()
+	else:
+		_update_table_hover(event.position)
 
 func _handle_touch(event: InputEventScreenTouch) -> void:
 	if event.pressed:

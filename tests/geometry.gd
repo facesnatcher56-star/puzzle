@@ -70,5 +70,15 @@ func _run() -> void:
 		_check(shadow_world.distance_to(PuzzlePieceView.SHADOW_OFFSET) < 0.01, "shadow direction stays fixed in the world after turn %d" % turn)
 		_check(is_equal_approx(view.rotation_degrees, piece.current_rotation) or is_equal_approx(fposmod(view.rotation_degrees, 360.0), float(piece.current_rotation)), "view matches state rotation")
 	_check(piece.current_position.distance_to(start_position) < 0.01 and piece.current_rotation == start_rotation, "four quarter turns restore position and rotation")
+	# Hovering a board piece shows the enlarged preview; moving off it hides it.
+	game.camera.position = Vector2.ZERO
+	game.camera.zoom = Vector2.ONE * 0.5
+	await process_frame
+	await process_frame
+	var centre: Vector2 = game.get_viewport().get_canvas_transform() * (piece.current_position + piece.piece_size * 0.5)
+	game._update_table_hover(centre)
+	_check(game.preview_panel.visible and game.hover_table_id == 5, "hovering a board piece shows its enlarged preview")
+	game._update_table_hover(Vector2(5, 300))
+	_check(not game.preview_panel.visible and game.hover_table_id == -1, "moving off the piece hides the preview")
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)
