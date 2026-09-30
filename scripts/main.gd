@@ -4,6 +4,17 @@ const SOURCE_IMAGE: Texture2D = preload("res://assets/emberbound.png")
 const PIECE_SCENE: PackedScene = preload("res://scenes/puzzle_piece.tscn")
 const BOARD_SIZE := Vector2(1122, 1402)
 const SIZES := [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(10, 25)]
+# Random Puzzle mode: each entry is picked at random and played with no reference image.
+# Add more artwork here and it joins the pool automatically.
+const RANDOM_IMAGES := {
+	"motel": preload("res://assets/random/motel.webp"),
+	"hotel": preload("res://assets/random/hotel.webp"),
+	"subway": preload("res://assets/random/subway.webp"),
+	"bayou": preload("res://assets/random/bayou.webp"),
+}
+# Grids for the 4:3 random artwork; chosen so cells stay close to square.
+const RANDOM_SIZES := [Vector2i(6, 4), Vector2i(8, 6), Vector2i(12, 9), Vector2i(18, 14)]
+const RANDOM_SAVE_PATH := "user://autosave_random.json"
 
 @onready var camera: Camera2D = $Camera2D
 @onready var piece_layer: Node2D = $Pieces
@@ -11,6 +22,9 @@ const SIZES := [Vector2i(4, 6), Vector2i(6, 8), Vector2i(8, 12), Vector2i(10, 25
 
 var manager := PuzzleManager.new()
 var source: Texture2D = SOURCE_IMAGE
+var image_id := "" # "" = the classic Emberbound puzzle, otherwise a RANDOM_IMAGES key
+var board_size := BOARD_SIZE
+var sizes: Array = SIZES
 var columns := 8
 var rows := 6
 var cell := Vector2(132, 117.333)
@@ -64,6 +78,7 @@ var complete_label: Label
 var rotation_button: Button
 var rotation_toggle: CheckButton
 var size_picker: OptionButton
+var title_label: Label
 var top_hint: Label
 var network_status_label: Label
 var leave_button: Button
@@ -72,6 +87,7 @@ var lobby_overlay: Control
 var lobby_stack: VBoxContainer
 var lobby_sub_open := false
 var host_port_field: LineEdit
+var host_mode_picker: OptionButton
 var host_status_label: Label
 var join_address_field: LineEdit
 var join_status_label: Label
@@ -147,7 +163,7 @@ func _draw() -> void:
 		draw_line(Vector2(x, -5000), Vector2(x, 5000), Color(1, 1, 1, 0.014), 1)
 	for y in range(-4800, 5000, 160):
 		draw_line(Vector2(-5000, y), Vector2(5000, y), Color(1, 1, 1, 0.014), 1)
-	var board := Rect2(-BOARD_SIZE * 0.5, BOARD_SIZE)
+	var board := Rect2(-board_size * 0.5, board_size)
 	draw_rect(board.grow(17), Color(0.05, 0.08, 0.09, 0.45), true)
 	draw_rect(board.grow(7), Color("ab9e83"), true)
 	draw_rect(board, Color("637374"), true)
@@ -156,6 +172,8 @@ func _draw() -> void:
 func _start_puzzle(new_seed: bool) -> void:
 	if new_seed:
 		seed_value += 1
+		if image_id != "":
+			_apply_image(_pick_random_image())
 	for child in piece_layer.get_children():
 		child.queue_free()
 	table_views.clear()
@@ -165,11 +183,11 @@ func _start_puzzle(new_seed: bool) -> void:
 	bank_press_id = -1
 	_hide_preview()
 	_clear_ghost()
-	var grid: Vector2i = SIZES[size_picker.selected]
+	var grid: Vector2i = sizes[size_picker.selected]
 	columns = grid.x
 	rows = grid.y
-	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
+	cell = Vector2(board_size.x / columns, board_size.y / rows)
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
 	if generated.size() != columns * rows:
 		push_error("Puzzle generation failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -187,7 +205,7 @@ func _start_puzzle(new_seed: bool) -> void:
 func _fit_camera() -> void:
 	var viewport_size := get_viewport_rect().size
 	var available := Vector2(viewport_size.x - 64, viewport_size.y - bank.bank_height - 85)
-	var fit := minf(available.x / BOARD_SIZE.x, available.y / BOARD_SIZE.y)
+	var fit := minf(available.x / board_size.x, available.y / board_size.y)
 	camera.zoom = Vector2.ONE * fit
 	camera.position = Vector2(0, (bank.bank_height - 53) * 0.5 / fit)
 
@@ -209,21 +227,19 @@ func _build_ui() -> void:
 	top.offset_bottom = 36
 	top.add_theme_constant_override("separation", 9)
 	top_bg.add_child(top)
-	var title := Label.new()
-	title.text = "EMBERBOUND JIGSAW"
-	title.add_theme_font_size_override("font_size", 19)
-	title.add_theme_color_override("font_color", Color("f4e5c3"))
-	title.custom_minimum_size.x = 180
-	top.add_child(title)
+	title_label = Label.new()
+	title_label.text = "EMBERBOUND JIGSAW"
+	title_label.add_theme_font_size_override("font_size", 19)
+	title_label.add_theme_color_override("font_color", Color("f4e5c3"))
+	title_label.custom_minimum_size.x = 180
+	top.add_child(title_label)
 	var size_label := Label.new()
 	size_label.text = "PIECES"
 	size_label.add_theme_font_size_override("font_size", 12)
 	top.add_child(size_label)
 	size_picker = OptionButton.new()
 	size_picker.focus_mode = Control.FOCUS_NONE
-	for grid in SIZES:
-		size_picker.add_item(str(grid.x * grid.y))
-	size_picker.select(3)
+	_fill_size_picker()
 	size_picker.item_selected.connect(func(_index: int): _start_puzzle(false))
 	top.add_child(size_picker)
 	rotation_toggle = CheckButton.new()
@@ -387,19 +403,23 @@ func _build_lobby_root() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = false
 	var title := Label.new()
-	title.text = "EMBERBOUND JIGSAW"
+	title.text = "JIGSAW"
 	title.add_theme_font_size_override("font_size", 20)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lobby_stack.add_child(title)
-	if SaveManager.has_save():
+	if SaveManager.has_save() or SaveManager.has_save(RANDOM_SAVE_PATH):
 		var hint := Label.new()
 		hint.text = "A puzzle in progress will resume automatically."
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD
 		lobby_stack.add_child(hint)
 	var solo_button := Button.new()
-	solo_button.text = "Play Solo"
+	solo_button.text = "Play Solo (Emberbound)"
 	solo_button.pressed.connect(_on_solo_pressed)
 	lobby_stack.add_child(solo_button)
+	var random_button := Button.new()
+	random_button.text = "Random Puzzle (no reference)"
+	random_button.pressed.connect(_on_random_pressed)
+	lobby_stack.add_child(random_button)
 	var host_button := Button.new()
 	host_button.text = "Host Game"
 	host_button.pressed.connect(_build_lobby_host)
@@ -425,6 +445,15 @@ func _build_lobby_host() -> void:
 	host_port_field.text = str(NetworkSession.DEFAULT_PORT)
 	host_port_field.custom_minimum_size.x = 100
 	port_row.add_child(host_port_field)
+	var mode_row := HBoxContainer.new()
+	lobby_stack.add_child(mode_row)
+	var mode_label := Label.new()
+	mode_label.text = "Puzzle"
+	mode_row.add_child(mode_label)
+	host_mode_picker = OptionButton.new()
+	host_mode_picker.add_item("Emberbound")
+	host_mode_picker.add_item("Random (no reference)")
+	mode_row.add_child(host_mode_picker)
 	var start_button := Button.new()
 	start_button.text = "Start Hosting"
 	start_button.pressed.connect(_on_start_hosting_pressed)
@@ -480,7 +509,11 @@ func _build_lobby_join() -> void:
 
 func _on_solo_pressed() -> void:
 	_hide_lobby()
-	_begin_local_session()
+	_begin_local_session(false)
+
+func _on_random_pressed() -> void:
+	_hide_lobby()
+	_begin_local_session(true)
 
 func _on_start_hosting_pressed() -> void:
 	var port := int(host_port_field.text)
@@ -493,12 +526,12 @@ func _on_start_hosting_pressed() -> void:
 		return
 	lan.start_announcing(port, Callable(self, "_lan_label"))
 	_hide_lobby()
-	_begin_local_session()
+	_begin_local_session(host_mode_picker.selected == 1)
 	_update_network_status()
 
 func _lan_label() -> String:
 	var peer_count := 1 + multiplayer.get_peers().size()
-	return "Emberbound Jigsaw (%d online)" % peer_count
+	return "%s (%d online)" % ["Random Puzzle" if image_id != "" else "Emberbound Jigsaw", peer_count]
 
 func _on_connect_pressed() -> void:
 	lan.stop()
@@ -544,12 +577,55 @@ func _on_lan_game_pressed(address: String, port: int) -> void:
 		return
 	join_status_label.text = "Connecting..."
 
-func _begin_local_session() -> void:
-	var saved := SaveManager.load_state()
-	if not saved.is_empty():
+func _begin_local_session(random_mode: bool) -> void:
+	var saved := SaveManager.load_state(RANDOM_SAVE_PATH if random_mode else SaveManager.SAVE_PATH)
+	if not saved.is_empty() and _save_matches_mode(saved, random_mode):
 		_restore_puzzle(saved)
+		return
+	if random_mode:
+		seed_value = randi_range(1, 1000000)
+		_apply_image(_pick_random_image())
 	else:
-		_start_puzzle(false)
+		_apply_image("")
+	_start_puzzle(false)
+
+func _save_matches_mode(saved: Dictionary, random_mode: bool) -> bool:
+	var saved_image := str(saved.get("image_id", ""))
+	if not random_mode:
+		return saved_image == ""
+	return RANDOM_IMAGES.has(saved_image)
+
+func _save_path() -> String:
+	return RANDOM_SAVE_PATH if image_id != "" else SaveManager.SAVE_PATH
+
+# Never repeats the image currently on the table, so "New puzzle" is always a visible change.
+func _pick_random_image() -> String:
+	var ids := RANDOM_IMAGES.keys()
+	var options := ids.filter(func(id): return id != image_id)
+	if options.is_empty():
+		options = ids
+	return options[randi() % options.size()]
+
+func _fill_size_picker() -> void:
+	size_picker.clear()
+	for grid in sizes:
+		size_picker.add_item(str(grid.x * grid.y))
+	size_picker.select(sizes.size() - 1)
+
+# Switches artwork/board/grid options; Random mode has no reference image, so it is hidden there.
+func _apply_image(id: String) -> void:
+	image_id = id
+	var random_mode := id != ""
+	source = RANDOM_IMAGES[id] if random_mode else SOURCE_IMAGE
+	board_size = source.get_size()
+	sizes = RANDOM_SIZES if random_mode else SIZES
+	_fill_size_picker()
+	title_label.text = "RANDOM PUZZLE" if random_mode else "EMBERBOUND JIGSAW"
+	reference_image_view.texture = source
+	reference_overlay.visible = false
+	bank.buttons["reference"].visible = not random_mode
+	reference_zoom = 1.0
+	_update_reference_image_layout()
 
 func _on_leave_pressed() -> void:
 	lan.stop()
@@ -603,7 +679,7 @@ func _apply_role_restrictions() -> void:
 func _puzzle_config() -> Dictionary:
 	return {
 		"seed_value": seed_value, "columns": columns, "rows": rows,
-		"rotation_enabled": rotation_enabled,
+		"rotation_enabled": rotation_enabled, "image_id": image_id,
 		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
 	}
 
@@ -617,17 +693,22 @@ func _restore_puzzle(saved: Dictionary) -> void:
 	bank_press_id = -1
 	_hide_preview()
 	_clear_ghost()
+	var saved_image := str(saved.get("image_id", ""))
+	if saved_image != "" and not RANDOM_IMAGES.has(saved_image):
+		push_error("Puzzle restore failed: unknown image '%s'" % saved_image)
+		return
+	_apply_image(saved_image)
 	seed_value = int(saved.seed_value)
 	columns = int(saved.columns)
 	rows = int(saved.rows)
 	rotation_enabled = bool(saved.rotation_enabled)
 	rotation_toggle.button_pressed = rotation_enabled
 	rotation_button.visible = rotation_enabled
-	cell = Vector2(BOARD_SIZE.x / columns, BOARD_SIZE.y / rows)
-	var size_index := SIZES.find(Vector2i(columns, rows))
+	cell = Vector2(board_size.x / columns, board_size.y / rows)
+	var size_index := sizes.find(Vector2i(columns, rows))
 	if size_index >= 0:
 		size_picker.select(size_index)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, BOARD_SIZE, rotation_enabled)
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
 	if generated.size() != columns * rows:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -664,7 +745,7 @@ func _write_save() -> void:
 		piece_snapshots.append(snap)
 	var data := _puzzle_config()
 	data["pieces"] = piece_snapshots
-	SaveManager.save(data)
+	SaveManager.save(data, _save_path())
 	save_dirty = false
 	last_saved_msec = Time.get_ticks_msec()
 
@@ -822,6 +903,8 @@ func _on_bank_action(action: String) -> void:
 	elif action == "new":
 		_start_puzzle(true)
 	elif action == "reference":
+		if image_id != "":
+			return
 		reference_overlay.visible = true
 		_hide_preview()
 	elif action == "collapse":
@@ -1190,10 +1273,10 @@ func _spread_table_pieces() -> void:
 	if group_ids.is_empty():
 		return
 	group_ids.sort()
-	var origin := Vector2(BOARD_SIZE.x * 0.62, -BOARD_SIZE.y * 0.42)
+	var origin := Vector2(board_size.x * 0.62, -board_size.y * 0.42)
 	var cursor := origin
 	var row_height := 0.0
-	var available_width := BOARD_SIZE.x * 1.7
+	var available_width := board_size.x * 1.7
 	var gap := minf(cell.x, cell.y) * 0.72
 	for group_id in group_ids:
 		var members: Array = manager.clusters[group_id]
