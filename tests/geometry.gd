@@ -108,7 +108,7 @@ func _run() -> void:
 	seam_view.table_mode = true
 	seam_view.setup(fresh[9], game.source, fresh[9].piece_size)
 	seam_view.refresh_seams()
-	_check(joined_manager.is_joined_side(9, 3) and seam_view.joined_mask == 1 << 3, "piece knows its left side is joined")
+	_check(joined_manager.is_joined_side(9, 1) and seam_view.joined_mask == 1 << 1, "piece knows its right side is joined")
 	_check(PuzzlePieceView._polygon_area(seam_view.art.polygon) > PuzzlePieceView._polygon_area(fresh[9].outline), "joined piece art grows to overlap its neighbour")
 	var hidden := 0
 	for i in range(seam_view.edges.points.size()):
