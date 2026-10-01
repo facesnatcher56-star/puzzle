@@ -1581,6 +1581,9 @@ func _on_piece_changed(piece_id: int) -> void:
 		table_views[piece_id] = new_view
 	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
 	table_views[piece_id].refresh_seams()
+	# Keep the hover popup in step with a piece that was just turned (by this player or a remote one).
+	if piece_id == hover_table_id and preview_view != null and not is_equal_approx(preview_view.rotation_degrees, float(piece.current_rotation)):
+		_show_preview(piece_id, get_viewport().get_mouse_position())
 
 func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()

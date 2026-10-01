@@ -25,6 +25,7 @@ static func generate(texture: Texture2D, columns: int, rows: int, seed_value: in
 			var a := Vector2(col_x[c], row_y[r])
 			var b := Vector2(col_x[c], row_y[r + 1])
 			seams["v_%d_%d" % [r, c]] = _make_seam(a, b, c == 0 or c == columns, rng, cell)
+	_repair_seams(seams, rows, columns)
 	# Keep orientation randomness independent of the seam sampling.
 	var rotation_rng := RandomNumberGenerator.new()
 	rotation_rng.seed = seed_value + 7919
@@ -114,16 +115,94 @@ static func _make_seam(a: Vector2, b: Vector2, flat: bool, rng: RandomNumberGene
 		# flat-topped anchor/mushroom lock -- picked at random per seam and mixed freely
 		# across the board, instead of one shape family with jittered proportions. Shared
 		# seams are still sampled once, so both neighbors retain exactly complementary contours.
-		match rng.randi_range(0, 3):
-			0:
-				pts = _round_knob(a, b, tangent, normal, sign_value, depth, rng)
-			1:
-				pts = _square_tab(a, b, tangent, normal, sign_value, depth, rng)
-			2:
-				pts = _triangular_tab(a, b, tangent, normal, sign_value, depth, rng)
-			_:
-				pts = _anchor_tab(a, b, tangent, normal, sign_value, depth, rng)
-	return {"sign": sign_value, "points": pts}
+		var family := rng.randi_range(0, 3)
+		pts = _sample_tab(family, a, b, tangent, normal, sign_value, depth, rng)
+		# A few parameter combinations fold a tab back across itself, which leaves a hole in the
+		# artwork where the polygon can't be filled. Resample those from a private, position-seeded
+		# stream (so the main stream -- and every other seam -- is unchanged) until the contour is clean.
+		if not _is_simple(pts):
+			var fix_rng := RandomNumberGenerator.new()
+			fix_rng.seed = hash(Vector2i(roundi(a.x * 8.0), roundi(a.y * 8.0))) ^ hash(Vector2i(roundi(b.x * 8.0), roundi(b.y * 8.0)))
+			for attempt in range(40):
+				pts = _sample_tab(fix_rng.randi_range(0, 3), a, b, tangent, normal, sign_value, depth, fix_rng)
+				if _is_simple(pts):
+					break
+			if not _is_simple(pts):
+				pts = _triangular_tab(a, b, tangent, normal, sign_value, depth, fix_rng)
+	return {"sign": sign_value, "points": pts, "a": a, "b": b, "depth": minf(cell.x, cell.y), "flat": flat}
+
+static func _piece_perimeter(seams: Dictionary, r: int, c: int) -> PackedVector2Array:
+	var perimeter := PackedVector2Array()
+	_append_segment(perimeter, seams["h_%d_%d" % [r, c]].points, false)
+	_append_segment(perimeter, seams["v_%d_%d" % [r, c + 1]].points, false)
+	_append_segment(perimeter, seams["h_%d_%d" % [r + 1, c]].points, true)
+	_append_segment(perimeter, seams["v_%d_%d" % [r, c]].points, true)
+	perimeter.remove_at(perimeter.size() - 1)
+	return perimeter
+
+# True when the closed outline never crosses itself.
+static func _is_simple_loop(pts: PackedVector2Array) -> bool:
+	var n := pts.size()
+	for i in range(n):
+		for j in range(i + 2, n):
+			if i == 0 and j == n - 1:
+				continue
+			if Geometry2D.segment_intersects_segment(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n]) != null:
+				return false
+	return true
+
+# Two tabs on neighbouring sides of one piece can grow into each other near their shared corner,
+# which makes the outline cross itself and leaves a hole in the artwork. Find those pieces and
+# resample one of their tabs (same in/out direction, so every interlock is preserved) until all
+# outlines are clean. Resampling uses private streams seeded from the seam's position, so the
+# result is deterministic and seams that were already fine never change.
+static func _repair_seams(seams: Dictionary, rows: int, columns: int) -> void:
+	for pass_index in range(40):
+		var repaired := false
+		for r in range(rows):
+			for c in range(columns):
+				if _is_simple_loop(_piece_perimeter(seams, r, c)):
+					continue
+				var keys := []
+				for key in ["h_%d_%d" % [r, c], "v_%d_%d" % [r, c + 1], "h_%d_%d" % [r + 1, c], "v_%d_%d" % [r, c]]:
+					if not seams[key].flat:
+						keys.append(key)
+				var fix_rng := RandomNumberGenerator.new()
+				fix_rng.seed = hash(Vector3i(r, c, pass_index)) + 12345
+				for attempt in range(60):
+					var key: String = keys[attempt % keys.size()]
+					var seam: Dictionary = seams[key]
+					var previous: PackedVector2Array = seam.points
+					var tangent: Vector2 = seam.b - seam.a
+					var normal := Vector2(tangent.y, -tangent.x).normalized()
+					var candidate := _sample_tab(fix_rng.randi_range(0, 3), seam.a, seam.b, tangent, normal, seam.sign, seam.depth, fix_rng)
+					if not _is_simple(candidate):
+						continue
+					seam.points = candidate
+					if _is_simple_loop(_piece_perimeter(seams, r, c)):
+						repaired = true
+						break
+					seam.points = previous
+		if not repaired:
+			return
+
+static func _sample_tab(family: int, a: Vector2, b: Vector2, tangent: Vector2, normal: Vector2, sign_value: int, depth: float, rng: RandomNumberGenerator) -> PackedVector2Array:
+	match family:
+		0:
+			return _round_knob(a, b, tangent, normal, sign_value, depth, rng)
+		1:
+			return _square_tab(a, b, tangent, normal, sign_value, depth, rng)
+		2:
+			return _triangular_tab(a, b, tangent, normal, sign_value, depth, rng)
+	return _anchor_tab(a, b, tangent, normal, sign_value, depth, rng)
+
+# True when no two non-adjacent segments of the polyline cross, i.e. the contour never folds over itself.
+static func _is_simple(pts: PackedVector2Array) -> bool:
+	for i in range(pts.size() - 1):
+		for j in range(i + 2, pts.size() - 1):
+			if Geometry2D.segment_intersects_segment(pts[i], pts[i + 1], pts[j], pts[j + 1]) != null:
+				return false
+	return true
 
 static func _to_world(a: Vector2, tangent: Vector2, normal: Vector2, sign_value: int, depth: float, local: Vector2) -> Vector2:
 	return a + tangent * local.x + normal * local.y * depth * sign_value

@@ -143,7 +143,11 @@ func snap_piece(piece_id: int) -> bool:
 					continue
 				if _edge_type(member, side) == 0 or _edge_type(member, side) != -_edge_type(neighbor, (side + 2) % 4):
 					continue
-				var expected := (neighbor.correct_position - member.correct_position).rotated(deg_to_rad(member.current_rotation))
+				# Pieces turn about their own centers, and neighbors differ in size, so the offset between their
+				# stored (top-left) positions is the rotated center offset minus the size difference -- not the
+				# rotated top-left offset, which lands rotated pieces several pixels out of true.
+				var correct_center_delta := (neighbor.correct_position + neighbor.piece_size * 0.5) - (member.correct_position + member.piece_size * 0.5)
+				var expected := correct_center_delta.rotated(deg_to_rad(member.current_rotation)) - (neighbor.piece_size - member.piece_size) * 0.5
 				var offset := neighbor.current_position - member.current_position - expected
 				var distance := offset.length()
 				if distance <= contact_tolerance and distance < best_distance and _edges_touch(member, side, neighbor):

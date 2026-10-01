@@ -115,5 +115,52 @@ func _run() -> void:
 		if not seam_view.edges._exposed(i):
 			hidden += 1
 	_check(hidden > 0, "joined side outline is not drawn")
+	# Rotated pieces must snap exactly into place: pieces differ in size, so a rotated join computed from
+	# top-left positions lands several pixels out of true. Check every joined piece is rigidly aligned.
+	for turns in range(4):
+		var angle := deg_to_rad(90.0 * turns)
+		var rig_pieces := PuzzleGenerator.generate(game.source, 8, 6, 777 + turns, game.board_size, false)
+		var rig := PuzzleManager.new()
+		rig.configure(rig_pieces, Vector2(game.board_size.x / 8, game.board_size.y / 6), 8, 6)
+		var shift := Vector2(-3000, 2000)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = turns + 1
+		for pc in rig_pieces:
+			var center: Vector2 = shift + (pc.correct_position + pc.piece_size * 0.5).rotated(angle)
+			rig.request_place_from_bank(pc.piece_id, center - pc.piece_size * 0.5 + Vector2(rng.randf_range(-3, 3), rng.randf_range(-3, 3)))
+			pc.current_rotation = 90 * turns
+		var order := range(rig_pieces.size())
+		order.shuffle()
+		for id in order:
+			rig.request_pickup(id)
+			rig.request_release(id)
+		_check(rig.clusters.size() == 1, "rotation %d: noisy pieces all snap into one group (got %d)" % [90 * turns, rig.clusters.size()])
+		var reference := Vector2.ZERO
+		var worst := 0.0
+		for pc in rig_pieces:
+			var drift: Vector2 = pc.current_position + pc.piece_size * 0.5 - (pc.correct_position + pc.piece_size * 0.5).rotated(angle)
+			if pc.piece_id == 0:
+				reference = drift
+			worst = maxf(worst, drift.distance_to(reference))
+		_check(worst < 0.01, "rotation %d: joined pieces are rigidly aligned (worst error %.3f px)" % [90 * turns, worst])
+	# The hover popup turns with the piece immediately.
+	game._select_table_piece(5)
+	game._update_table_hover(centre)
+	var popup_before: float = game.preview_view.rotation_degrees
+	game._rotate_selected()
+	_check(not is_equal_approx(game.preview_view.rotation_degrees, popup_before) and is_equal_approx(game.preview_view.rotation_degrees, float(piece.current_rotation)), "popup rotates immediately with the piece")
+	# Every outline must be a clean, fillable polygon (tabs never fold over or cross each other),
+	# otherwise the artwork shows holes. Also check the grown outline used for joined pieces.
+	for sd in range(1, 31):
+		for grid in [Vector2i(8, 6), Vector2i(18, 14)]:
+			for pc in PuzzleGenerator.generate(game.source, grid.x, grid.y, sd, game.board_size, false):
+				var tag := "seed %d %dx%d piece %d" % [sd, grid.x, grid.y, pc.piece_id]
+				_check(PuzzleGenerator._is_simple_loop(pc.outline), tag + ": outline does not cross itself")
+				var full := PuzzlePieceView._polygon_area(pc.outline)
+				var idx := Geometry2D.triangulate_polygon(pc.outline)
+				var filled := 0.0
+				for i in range(0, idx.size(), 3):
+					filled += PuzzlePieceView._polygon_area(PackedVector2Array([pc.outline[idx[i]], pc.outline[idx[i + 1]], pc.outline[idx[i + 2]]]))
+				_check(absf(filled - full) < full * 0.002, tag + ": artwork fills the whole outline")
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)
