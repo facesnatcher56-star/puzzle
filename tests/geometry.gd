@@ -83,5 +83,37 @@ func _run() -> void:
 	_check(not game.preview_panel.visible and game.hover_table_id == -1, "moving off the piece hides the preview")
 	for entry in SaveManager.list_saves():
 		SaveManager.delete_slot(entry.slot)
+	# Left-dragging empty table pans the camera.
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = Vector2(5, 300)
+	game._handle_mouse_button(click)
+	_check(game.mouse_panning, "left click on empty table starts a camera pan")
+	click.pressed = false
+	game._handle_mouse_button(click)
+	_check(not game.mouse_panning, "releasing stops the pan")
+	# Joined pieces merge visually: no seam lines on joined sides, art grown to overlap.
+	var fresh := PuzzleGenerator.generate(game.source, 8, 6, 5, game.board_size)
+	var joined_manager := PuzzleManager.new()
+	joined_manager.configure(fresh, Vector2(10, 10), 8, 6)
+	for id in [9, 10]:
+		var pc: PuzzlePieceState = joined_manager.get_piece(id)
+		joined_manager.request_place_from_bank(id, pc.correct_position + Vector2(20, 20))
+	for id in [9, 10]:
+		joined_manager.request_pickup(id)
+		joined_manager.request_release(id)
+	var seam_view := PuzzlePieceView.new()
+	seam_view.manager = joined_manager
+	seam_view.table_mode = true
+	seam_view.setup(fresh[9], game.source, fresh[9].piece_size)
+	seam_view.refresh_seams()
+	_check(joined_manager.is_joined_side(9, 3) and seam_view.joined_mask == 1 << 3, "piece knows its left side is joined")
+	_check(PuzzlePieceView._polygon_area(seam_view.art.polygon) > PuzzlePieceView._polygon_area(fresh[9].outline), "joined piece art grows to overlap its neighbour")
+	var hidden := 0
+	for i in range(seam_view.edges.points.size()):
+		if not seam_view.edges._exposed(i):
+			hidden += 1
+	_check(hidden > 0, "joined side outline is not drawn")
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)

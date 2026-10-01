@@ -108,6 +108,7 @@ func _ready() -> void:
 	DisplaySettings.apply_saved()
 	_apply_mobile_scale()
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	piece_layer.z_index = 1 # resting pieces' shadows sit at z 0, above the board but under every piece
 	if source == null:
 		push_error("Bundled puzzle image failed to load: res://assets/emberbound.png")
 		return
@@ -1377,6 +1378,8 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 		dragging_table_id = picked
 		drag_offset = world - manager.get_piece(picked).current_position
 		_bring_cluster_forward(picked)
+	elif picked < 0:
+		mouse_panning = true # left-dragging empty table moves the camera
 
 func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if reference_dragging:
@@ -1572,9 +1575,12 @@ func _on_piece_changed(piece_id: int) -> void:
 	if not table_views.has(piece_id):
 		var new_view: PuzzlePieceView = PIECE_SCENE.instantiate()
 		piece_layer.add_child(new_view)
+		new_view.table_mode = true
+		new_view.manager = manager
 		new_view.setup(piece, source, piece.piece_size)
 		table_views[piece_id] = new_view
 	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
+	table_views[piece_id].refresh_seams()
 
 func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()

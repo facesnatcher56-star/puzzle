@@ -26,6 +26,9 @@ var tray_id: int = 0
 var owner_peer_id: int = 0
 var outline: PackedVector2Array
 var uv: PackedVector2Array
+# uv == (local point + uv_origin) * uv_scale, so a grown outline can be textured consistently.
+var uv_origin := Vector2.ZERO
+var uv_scale := Vector2.ONE
 var edge_contours: Array = [] # Top, right, bottom, left in local piece coordinates.
 
 func snapshot() -> Dictionary:

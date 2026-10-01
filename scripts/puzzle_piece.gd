@@ -1,18 +1,25 @@
 class_name PuzzlePieceView
 extends Node2D
 
+const SHADOW_OFFSET := Vector2(2, 3.5)
+const SOFT_SHADOW_OFFSET := Vector2(5, 8)
+# Joined pieces grow a hair into each other so antialiasing can never leave a visible seam.
+const SEAM_OVERLAP := 0.8
+
 var data: PuzzlePieceState
 var texture_source: Texture2D
 var cell_size: Vector2
 var selected := false
-const SHADOW_OFFSET := Vector2(2, 3.5)
-const SOFT_SHADOW_OFFSET := Vector2(5, 8)
+# Set by the board for pieces on the table: lets the piece see which neighbours it is joined to,
+# and moves its shadows onto a layer beneath every resting piece so one piece's shadow never
+# darkens the piece it is joined to.
+var manager: PuzzleManager
+var table_mode := false
 var shadow: Polygon2D
 var soft_shadow: Polygon2D
-var rim: PieceRim
 var art: Polygon2D
-var border: Line2D
-var highlight: Line2D
+var edges: PieceEdges
+var joined_mask := 0
 
 func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
@@ -30,38 +37,59 @@ func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	shadow.color = Color(0.02, 0.03, 0.04, 0.42)
 	shadow.position = SHADOW_OFFSET
 	add_child(shadow)
+	if table_mode:
+		soft_shadow.z_index = -1
+		shadow.z_index = -1
 	art = Polygon2D.new()
 	art.polygon = data.outline
 	art.uv = data.uv
 	art.texture = texture_source
 	add_child(art)
-	border = Line2D.new()
-	border.points = _closed_outline()
-	border.width = 1.4
-	border.default_color = Color(0.06, 0.08, 0.1, 0.78)
-	border.antialiased = true
-	border.joint_mode = Line2D.LINE_JOINT_ROUND
-	add_child(border)
-	rim = PieceRim.new()
-	rim.setup(data.outline)
-	add_child(rim)
-	highlight = Line2D.new()
-	highlight.points = _closed_outline()
-	highlight.width = 4.0
-	highlight.default_color = Color(1.0, 0.86, 0.46, 0.95)
-	highlight.antialiased = true
-	highlight.visible = false
-	add_child(highlight)
+	edges = PieceEdges.new()
+	edges.setup(data)
+	add_child(edges)
 
-func _closed_outline() -> PackedVector2Array:
-	var pts := data.outline.duplicate()
-	pts.append(pts[0])
-	return pts
+# Re-reads which sides are joined to a neighbour in the same group; only redraws when that changes.
+func refresh_seams() -> void:
+	if manager == null:
+		return
+	var mask := 0
+	for side in range(4):
+		if manager.is_joined_side(data.piece_id, side):
+			mask |= 1 << side
+	if mask == joined_mask:
+		return
+	joined_mask = mask
+	edges.set_joined(mask)
+	if mask == 0:
+		art.polygon = data.outline
+		art.uv = data.uv
+		return
+	var grown := Geometry2D.offset_polygon(data.outline, SEAM_OVERLAP, Geometry2D.JOIN_ROUND)
+	if grown.is_empty():
+		return
+	var best: PackedVector2Array = grown[0]
+	for candidate in grown:
+		if _polygon_area(candidate) > _polygon_area(best):
+			best = candidate
+	var texture_uv := PackedVector2Array()
+	for point in best:
+		texture_uv.append((point + data.uv_origin) * data.uv_scale)
+	art.polygon = best
+	art.uv = texture_uv
+
+static func _polygon_area(points: PackedVector2Array) -> float:
+	var area := 0.0
+	for i in range(points.size()):
+		var a := points[i]
+		var b := points[(i + 1) % points.size()]
+		area += a.x * b.y - b.x * a.y
+	return absf(area) * 0.5
 
 func set_selected(value: bool) -> void:
 	selected = value
-	if highlight:
-		highlight.visible = value
+	if edges:
+		edges.set_selected(value)
 
 func hit_test(world_point: Vector2) -> bool:
 	return Geometry2D.is_point_in_polygon(to_local(world_point), data.outline)
@@ -70,30 +98,59 @@ func hit_test(world_point: Vector2) -> bool:
 func place_centered(center: Vector2, factor: float = 1.0) -> void:
 	scale = Vector2.ONE * factor
 	rotation_degrees = data.current_rotation
-	if rim != null:
+	position = center - (cell_size * 0.5).rotated(rotation) * factor
+	if edges != null:
 		# Light and shadows stay fixed in the world (light from the upper left) however the piece is turned.
-		rim.set_light(Vector2(-0.6, -0.8).rotated(-rotation))
+		edges.set_light(Vector2(-0.6, -0.8).rotated(-rotation))
 		shadow.position = SHADOW_OFFSET.rotated(-rotation)
 		soft_shadow.position = SOFT_SHADOW_OFFSET.rotated(-rotation)
-	position = center - (cell_size * 0.5).rotated(rotation) * factor
 
-
-# Bevel lighting: every outline segment is inset a hair and tinted by how squarely it faces
-# the light, so edges toward the upper left catch a highlight and the opposite edges sink
-# into shade, giving each piece a pressed-cardboard thickness.
-class PieceRim extends Node2D:
+# Draws the piece's outline: a dark border, a bevel lit from the upper left, and the selection
+# glow. Sides joined to a neighbour are skipped entirely so a finished group reads as one piece.
+class PieceEdges extends Node2D:
+	const BORDER_COLOR := Color(0.06, 0.08, 0.1, 0.78)
+	const HIGHLIGHT_COLOR := Color(1.0, 0.86, 0.46, 0.95)
 	var points: PackedVector2Array
+	var segment_side := PackedInt32Array() # which side (0 top, 1 right, 2 bottom, 3 left) each outline segment lies on
+	var joined_mask := 0
 	var light := Vector2(-0.6, -0.8)
 	var outward_sign := 1.0
+	var selected := false
 
-	func setup(outline: PackedVector2Array) -> void:
-		points = outline
+	func setup(piece: PuzzlePieceState) -> void:
+		points = piece.outline
 		var area := 0.0
 		for i in range(points.size()):
 			var a := points[i]
 			var b := points[(i + 1) % points.size()]
 			area += a.x * b.y - b.x * a.y
 		outward_sign = 1.0 if area > 0.0 else -1.0
+		var side_points := []
+		for side in range(4):
+			var keys := {}
+			for point in piece.edge_contours[side]:
+				keys[_key(point)] = true
+			side_points.append(keys)
+		segment_side.resize(points.size())
+		for i in range(points.size()):
+			var ka := _key(points[i])
+			var kb := _key(points[(i + 1) % points.size()])
+			segment_side[i] = -1
+			for side in range(4):
+				if side_points[side].has(ka) and side_points[side].has(kb):
+					segment_side[i] = side
+					break
+
+	static func _key(point: Vector2) -> Vector2i:
+		return Vector2i(roundi(point.x * 50.0), roundi(point.y * 50.0))
+
+	func set_joined(mask: int) -> void:
+		joined_mask = mask
+		queue_redraw()
+
+	func set_selected(value: bool) -> void:
+		selected = value
+		queue_redraw()
 
 	func set_light(value: Vector2) -> void:
 		if value.distance_squared_to(light) < 0.0001:
@@ -101,11 +158,49 @@ class PieceRim extends Node2D:
 		light = value
 		queue_redraw()
 
+	func _exposed(segment: int) -> bool:
+		var side := segment_side[segment]
+		return side < 0 or (joined_mask & (1 << side)) == 0
+
+	# Consecutive exposed segments as polylines, so line joins stay clean.
+	func _runs() -> Array:
+		var count := points.size()
+		var runs := []
+		var start := -1
+		for i in range(count):
+			if not _exposed(i) and _exposed((i + 1) % count):
+				start = (i + 1) % count
+				break
+		if start < 0:
+			if joined_mask == 0:
+				var loop := points.duplicate()
+				loop.append(points[0])
+				runs.append(loop)
+			return runs
+		var current := PackedVector2Array()
+		for step in range(count):
+			var i := (start + step) % count
+			if _exposed(i):
+				if current.is_empty():
+					current.append(points[i])
+				current.append(points[(i + 1) % count])
+			elif not current.is_empty():
+				runs.append(current)
+				current = PackedVector2Array()
+		if not current.is_empty():
+			runs.append(current)
+		return runs
+
 	func _draw() -> void:
+		var runs := _runs()
+		for run in runs:
+			draw_polyline(run, BORDER_COLOR, 1.4, true)
 		var segments := PackedVector2Array()
 		var colors := PackedColorArray()
 		var inset := 1.3
 		for i in range(points.size()):
+			if not _exposed(i):
+				continue
 			var a := points[i]
 			var b := points[(i + 1) % points.size()]
 			var d := b - a
@@ -117,7 +212,9 @@ class PieceRim extends Node2D:
 				continue
 			segments.append(a - normal * inset)
 			segments.append(b - normal * inset)
-			var color := Color(1, 1, 1, shade * 0.5) if shade > 0.0 else Color(0, 0, 0, -shade * 0.42)
-			colors.append(color)
+			colors.append(Color(1, 1, 1, shade * 0.5) if shade > 0.0 else Color(0, 0, 0, -shade * 0.42))
 		if not segments.is_empty():
 			draw_multiline_colors(segments, colors, 2.4)
+		if selected:
+			for run in runs:
+				draw_polyline(run, HIGHLIGHT_COLOR, 4.0, true)

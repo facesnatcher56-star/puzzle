@@ -19,16 +19,12 @@ static func generate(texture: Texture2D, columns: int, rows: int, seed_value: in
 		for c in range(columns):
 			var a := Vector2(col_x[c], row_y[r])
 			var b := Vector2(col_x[c + 1], row_y[r])
-			var chamfer_a := _vertex_chamfer(r, c, rows, columns, seed_value, cell)
-			var chamfer_b := _vertex_chamfer(r, c + 1, rows, columns, seed_value, cell)
-			seams["h_%d_%d" % [r, c]] = _make_seam(a, b, r == 0 or r == rows, rng, cell, chamfer_a, chamfer_b)
+			seams["h_%d_%d" % [r, c]] = _make_seam(a, b, r == 0 or r == rows, rng, cell)
 	for r in range(rows):
 		for c in range(columns + 1):
 			var a := Vector2(col_x[c], row_y[r])
 			var b := Vector2(col_x[c], row_y[r + 1])
-			var chamfer_a := _vertex_chamfer(r, c, rows, columns, seed_value, cell)
-			var chamfer_b := _vertex_chamfer(r + 1, c, rows, columns, seed_value, cell)
-			seams["v_%d_%d" % [r, c]] = _make_seam(a, b, c == 0 or c == columns, rng, cell, chamfer_a, chamfer_b)
+			seams["v_%d_%d" % [r, c]] = _make_seam(a, b, c == 0 or c == columns, rng, cell)
 	# Keep orientation randomness independent of the seam sampling.
 	var rotation_rng := RandomNumberGenerator.new()
 	rotation_rng.seed = seed_value + 7919
@@ -69,6 +65,8 @@ static func generate(texture: Texture2D, columns: int, rows: int, seed_value: in
 			]
 			piece.outline = PackedVector2Array()
 			piece.uv = PackedVector2Array()
+			piece.uv_origin = origin
+			piece.uv_scale = Vector2(tex_size.x / board_size.x, tex_size.y / board_size.y)
 			for p in perimeter:
 				piece.outline.append(p - origin)
 				piece.uv.append(Vector2(p.x / board_size.x * tex_size.x, p.y / board_size.y * tex_size.y))
@@ -90,22 +88,6 @@ static func _jittered_boundaries(count: int, length: float, sub_seed: int) -> Pa
 		result[i] = i * nominal + jitter_rng.randf_range(-0.08, 0.08) * nominal
 	return result
 
-# A small, deterministic bevel at most interior grid vertices (never the board's own 4
-# outer corners, which stay crisp) so pieces aren't uniformly sharp-cornered rectangles
-# underneath their tabs. Purely a function of (row, column, seed), so every seam meeting
-# at a shared vertex -- built independently, possibly for a different piece entirely --
-# derives the exact same trim without any of them knowing about each other.
-static func _vertex_chamfer(r: int, c: int, rows: int, columns: int, seed_value: int, cell: Vector2) -> float:
-	# Vertices on the board's perimeter stay crisp so every edge piece has a perfectly straight
-	# outer side and every corner piece a true square corner; only interior vertices are trimmed.
-	if r == 0 or r == rows or c == 0 or c == columns:
-		return 0.0
-	var vertex_rng := RandomNumberGenerator.new()
-	vertex_rng.seed = seed_value ^ (r * 92821 + c * 68917 + 104729)
-	if vertex_rng.randf() < 0.4:
-		return 0.0
-	return vertex_rng.randf_range(0.05, 0.16) * minf(cell.x, cell.y)
-
 static func _append_segment(dest: PackedVector2Array, source: PackedVector2Array, reverse: bool) -> void:
 	for i in range(source.size()):
 		if dest.size() > 0 and i == 0:
@@ -118,7 +100,7 @@ static func _local_edge(source: PackedVector2Array, reverse: bool, origin: Vecto
 		result.append(source[source.size() - 1 - i] - origin if reverse else source[i] - origin)
 	return result
 
-static func _make_seam(a: Vector2, b: Vector2, flat: bool, rng: RandomNumberGenerator, cell: Vector2, chamfer_a: float, chamfer_b: float) -> Dictionary:
+static func _make_seam(a: Vector2, b: Vector2, flat: bool, rng: RandomNumberGenerator, cell: Vector2) -> Dictionary:
 	var sign_value := 0
 	var pts: PackedVector2Array
 	if flat:
@@ -141,25 +123,7 @@ static func _make_seam(a: Vector2, b: Vector2, flat: bool, rng: RandomNumberGene
 				pts = _triangular_tab(a, b, tangent, normal, sign_value, depth, rng)
 			_:
 				pts = _anchor_tab(a, b, tangent, normal, sign_value, depth, rng)
-	_apply_corner_chamfer(pts, chamfer_a, chamfer_b)
 	return {"sign": sign_value, "points": pts}
-
-# Insets the seam's very first/last point along its own straight approach direction.
-# Every tab family already places its second/second-to-last point with zero normal
-# offset (exactly on the straight a-b baseline), so this direction is always the
-# seam's plain grid-aligned tangent no matter which tab family was picked -- that's
-# what lets two unrelated seams meeting at the same vertex bevel it identically from
-# each side, each only knowing its own two endpoints.
-static func _apply_corner_chamfer(pts: PackedVector2Array, chamfer_a: float, chamfer_b: float) -> void:
-	if pts.size() < 2:
-		return
-	if chamfer_a > 0.0:
-		var dir_a := (pts[1] - pts[0]).normalized()
-		pts[0] = pts[0] + dir_a * minf(chamfer_a, pts[0].distance_to(pts[1]) * 0.9)
-	if chamfer_b > 0.0:
-		var last := pts.size() - 1
-		var dir_b := (pts[last - 1] - pts[last]).normalized()
-		pts[last] = pts[last] + dir_b * minf(chamfer_b, pts[last - 1].distance_to(pts[last]) * 0.9)
 
 static func _to_world(a: Vector2, tangent: Vector2, normal: Vector2, sign_value: int, depth: float, local: Vector2) -> Vector2:
 	return a + tangent * local.x + normal * local.y * depth * sign_value

@@ -35,6 +35,17 @@ func cluster_members(piece_id: int) -> Array:
 		return []
 	return clusters.get(piece.cluster_id, [])
 
+# True when the piece on `side` is part of the same joined group, i.e. the two share a seam that is closed for good.
+func is_joined_side(piece_id: int, side: int) -> bool:
+	var piece := get_piece(piece_id)
+	if piece == null or not piece.is_on_table or piece.cluster_id < 0:
+		return false
+	var neighbor_id := _correct_neighbor(piece, side)
+	if neighbor_id < 0:
+		return false
+	var neighbor: PuzzlePieceState = pieces[neighbor_id]
+	return neighbor.is_on_table and neighbor.cluster_id == piece.cluster_id
+
 func request_place_from_bank(piece_id: int, position: Vector2, player_id: int = 0) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or piece.is_on_table:
