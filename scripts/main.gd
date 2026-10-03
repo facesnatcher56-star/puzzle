@@ -104,6 +104,7 @@ var join_games_status: Label
 var lan: LanDiscovery
 
 func _ready() -> void:
+	DisplayServer.window_set_title("Emberbound Jigsaw  -  build " + BuildInfo.ID)
 	SaveManager.migrate_legacy()
 	DisplaySettings.apply_saved()
 	_apply_mobile_scale()
@@ -626,6 +627,8 @@ func _build_lobby_root() -> void:
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.pressed.connect(entry[1])
 		extras.add_child(button)
+	var build_label := _lobby_caption("Build " + BuildInfo.ID)
+	build_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 func _build_lobby_new() -> void:
 	_clear_lobby_stack()

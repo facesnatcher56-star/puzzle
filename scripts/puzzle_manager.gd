@@ -242,10 +242,28 @@ func apply_snapshots(snapshots: Array) -> void:
 		if piece != null:
 			piece.apply_snapshot(data)
 	rebuild_clusters()
+	realign_clusters()
 	completion_announced = pieces.size() > 0 and table_count() == pieces.size() and clusters.size() == 1
 	for piece in pieces:
 		piece_changed.emit(piece.piece_id)
 	bank_changed.emit()
+
+# Snaps every joined group back to its exact true layout, anchored on its lowest-numbered piece.
+# Saves made by older builds could hold groups whose pieces had drifted a few pixels apart (rotated
+# joins were computed slightly wrong), which showed up as gaps and mismatched seams inside a group.
+func realign_clusters() -> void:
+	for members in clusters.values():
+		if members.size() < 2:
+			continue
+		var anchor: PuzzlePieceState = pieces[members[0]]
+		var angle := deg_to_rad(anchor.current_rotation)
+		var anchor_drift := anchor.current_position + anchor.piece_size * 0.5 - (anchor.correct_position + anchor.piece_size * 0.5).rotated(angle)
+		for i in range(1, members.size()):
+			var member: PuzzlePieceState = pieces[members[i]]
+			if member.current_rotation != anchor.current_rotation:
+				continue
+			var center := (member.correct_position + member.piece_size * 0.5).rotated(angle) + anchor_drift
+			member.current_position = center - member.piece_size * 0.5
 
 func move_piece_to_tray(piece_id: int, tray_id: int) -> bool:
 	var piece := get_piece(piece_id)

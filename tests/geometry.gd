@@ -162,5 +162,24 @@ func _run() -> void:
 				for i in range(0, idx.size(), 3):
 					filled += PuzzlePieceView._polygon_area(PackedVector2Array([pc.outline[idx[i]], pc.outline[idx[i + 1]], pc.outline[idx[i + 2]]]))
 				_check(absf(filled - full) < full * 0.002, tag + ": artwork fills the whole outline")
+	# Groups from old saves with drifted pieces are pulled back into exact alignment on load.
+	var drift_pieces := PuzzleGenerator.generate(game.source, 8, 6, 31, game.board_size, false)
+	var drift_manager := PuzzleManager.new()
+	drift_manager.configure(drift_pieces, Vector2(game.board_size.x / 8, game.board_size.y / 6), 8, 6)
+	var drift_snaps := []
+	for pc in drift_pieces:
+		var snap := pc.snapshot()
+		snap.on_table = pc.piece_id in [9, 10, 11]
+		snap.cluster_id = 9 if snap.on_table else -1
+		snap.rotation = 90
+		var turned := (pc.correct_position + pc.piece_size * 0.5).rotated(PI * 0.5) - pc.piece_size * 0.5
+		snap.position = [turned.x + (6.0 if pc.piece_id == 10 else 0.0), turned.y - (4.0 if pc.piece_id == 11 else 0.0)]
+		drift_snaps.append(snap)
+	drift_manager.apply_snapshots(drift_snaps)
+	var d9 := drift_pieces[9].current_position + drift_pieces[9].piece_size * 0.5 - (drift_pieces[9].correct_position + drift_pieces[9].piece_size * 0.5).rotated(PI * 0.5)
+	for id in [10, 11]:
+		var pc: PuzzlePieceState = drift_pieces[id]
+		var d := pc.current_position + pc.piece_size * 0.5 - (pc.correct_position + pc.piece_size * 0.5).rotated(PI * 0.5)
+		_check(d.distance_to(d9) < 0.01, "piece %d is realigned to its group on load" % id)
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)
