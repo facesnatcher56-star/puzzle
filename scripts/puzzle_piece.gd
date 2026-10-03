@@ -91,6 +91,12 @@ func set_selected(value: bool) -> void:
 	if edges:
 		edges.set_selected(value)
 
+# Pulsing finder glow, used to show where loose edge/corner pieces are.
+func set_flagged(value: bool) -> void:
+	if edges:
+		edges.set_flagged(value)
+	z_index = 5 if value else 0 # lifted so the glow is never hidden under neighbours
+
 func hit_test(world_point: Vector2) -> bool:
 	return Geometry2D.is_point_in_polygon(to_local(world_point), data.outline)
 
@@ -116,6 +122,19 @@ class PieceEdges extends Node2D:
 	var light := Vector2(-0.6, -0.8)
 	var outward_sign := 1.0
 	var selected := false
+	var flagged := false
+	var pulse := 0.0
+
+	func set_flagged(value: bool) -> void:
+		if flagged == value:
+			return
+		flagged = value
+		set_process(value)
+		queue_redraw()
+
+	func _process(delta: float) -> void:
+		pulse += delta * 6.0
+		queue_redraw()
 
 	func setup(piece: PuzzlePieceState) -> void:
 		points = piece.outline
@@ -218,3 +237,8 @@ class PieceEdges extends Node2D:
 		if selected:
 			for run in runs:
 				draw_polyline(run, HIGHLIGHT_COLOR, 4.0, true)
+		if flagged:
+			var glow := Color(0.25, 0.95, 1.0, 0.65 + 0.35 * sin(pulse))
+			for run in runs:
+				draw_polyline(run, Color(glow.r, glow.g, glow.b, glow.a * 0.35), 11.0, true)
+				draw_polyline(run, glow, 5.0, true)

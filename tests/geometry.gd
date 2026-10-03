@@ -181,5 +181,42 @@ func _run() -> void:
 		var pc: PuzzlePieceState = drift_pieces[id]
 		var d := pc.current_position + pc.piece_size * 0.5 - (pc.correct_position + pc.piece_size * 0.5).rotated(PI * 0.5)
 		_check(d.distance_to(d9) < 0.01, "piece %d is realigned to its group on load" % id)
+	# Loose pieces are never hidden: bigger groups sit under smaller ones, and a dropped piece that
+	# would fully cover an equal-size piece is nudged aside.
+	var hide_game = load("res://scenes/main.tscn").instantiate()
+	root.add_child(hide_game)
+	hide_game._hide_lobby()
+	hide_game._new_session(false)
+	hide_game._set_rotation_enabled(false)
+	await process_frame
+	var hm: PuzzleManager = hide_game.manager
+	hm.request_place_from_bank(0, Vector2(100, 100))
+	hm.request_place_from_bank(1, Vector2(100, 100) + hm.get_piece(1).correct_position - hm.get_piece(0).correct_position)
+	hm.request_pickup(0)
+	hm.request_release(0)
+	hm.request_place_from_bank(30, Vector2(120, 120))
+	hide_game._restack_pieces()
+	var order: Array = hide_game.piece_layer.get_children()
+	var single_index: int = order.find(hide_game.table_views[30])
+	var group_index: int = order.find(hide_game.table_views[0])
+	_check(hm.cluster_members(0).size() == 2 and single_index > group_index, "a loose piece is stacked above a larger joined group")
+	hm.request_place_from_bank(31, hm.get_piece(30).current_position)
+	hm.request_pickup(31)
+	hide_game._drop_piece(31)
+	var covered_rect: Rect2 = hide_game._cluster_rect(30)
+	var dropped_rect: Rect2 = hide_game._cluster_rect(31)
+	_check(dropped_rect.intersection(covered_rect).get_area() < covered_rect.get_area() * 0.3, "a piece dropped squarely on an equal-size piece is nudged clear of it")
+	# Edge/corner finder highlights only loose pieces of that type.
+	var edge_id := 0
+	var corner_id := 0
+	for pc in hm.pieces:
+		if pc.is_corner_piece and corner_id == 0 and pc.piece_id != 0:
+			corner_id = pc.piece_id
+	hm.request_place_from_bank(corner_id, Vector2(-900, -700))
+	hide_game._set_type_highlight("CORNERS")
+	_check(hide_game.table_views[corner_id].edges.flagged, "hovering CORNERS lights a loose corner piece")
+	_check(not hide_game.table_views[30].edges.flagged, "non-corner pieces are not lit by CORNERS")
+	hide_game._set_type_highlight("")
+	_check(not hide_game.table_views[corner_id].edges.flagged, "highlight clears when the mouse leaves the button")
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)

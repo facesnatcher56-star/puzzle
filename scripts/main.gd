@@ -45,6 +45,9 @@ var touch_panning := false
 var pinch_distance := 0.0
 var bank_scrolling := false
 var hover_table_id := -1
+var highlight_kind := "" # "EDGES" or "CORNERS" while that bank button is hovered/pressed
+var highlight_timer: Timer
+var hovering_filter_button := false
 var rotation_enabled := true
 
 var network: NetworkSession
@@ -293,6 +296,15 @@ func _build_ui() -> void:
 	bank.piece_unhovered.connect(_on_bank_unhovered)
 	bank.piece_pressed.connect(_on_bank_pressed)
 	bank.action_requested.connect(_on_bank_action)
+	bank.action_hovered.connect(_on_bank_action_hovered)
+	bank.action_unhovered.connect(_on_bank_action_unhovered)
+	highlight_timer = Timer.new()
+	highlight_timer.one_shot = true
+	highlight_timer.wait_time = 2.5
+	highlight_timer.timeout.connect(func():
+		if not hovering_filter_button:
+			_set_type_highlight(""))
+	add_child(highlight_timer)
 	preview_panel = Panel.new()
 	preview_panel.visible = false
 	preview_panel.size = Vector2(278, 258)
@@ -1185,6 +1197,10 @@ func _on_bank_action(action: String) -> void:
 		return
 	if action.begins_with("filter:"):
 		bank.set_filter(action.trim_prefix("filter:"))
+		# Touch has no hover, so a tap flashes the matching loose pieces for a moment instead.
+		if action == "filter:EDGES" or action == "filter:CORNERS":
+			_set_type_highlight(action.trim_prefix("filter:"))
+			highlight_timer.start()
 	elif action == "assign_tray":
 		if selected_bank_id >= 0 and manager.move_piece_to_tray(selected_bank_id, 1):
 			bank.refresh()
@@ -1202,6 +1218,27 @@ func _on_bank_action(action: String) -> void:
 	elif action == "collapse":
 		bank.toggle_collapsed()
 		_hide_preview()
+
+func _on_bank_action_hovered(action: String) -> void:
+	if action == "filter:EDGES" or action == "filter:CORNERS":
+		hovering_filter_button = true
+		_set_type_highlight(action.trim_prefix("filter:"))
+
+func _on_bank_action_unhovered(action: String) -> void:
+	if action == "filter:EDGES" or action == "filter:CORNERS":
+		hovering_filter_button = false
+		_set_type_highlight("")
+
+# Glows every loose (not joined to anything) piece of the given type on the board.
+func _set_type_highlight(kind: String) -> void:
+	highlight_kind = kind
+	_refresh_type_highlight()
+
+func _refresh_type_highlight() -> void:
+	for piece_id in table_views:
+		var piece := manager.get_piece(piece_id)
+		var lit := highlight_kind != "" and piece != null and manager.cluster_members(piece_id).size() == 1 and (piece.is_corner_piece if highlight_kind == "CORNERS" else piece.is_edge_piece)
+		table_views[piece_id].set_flagged(lit)
 
 func _on_bank_hovered(piece_id: int, screen_position: Vector2) -> void:
 	_show_preview(piece_id, screen_position)
@@ -1357,8 +1394,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			bank_press_id = -1
 			_clear_ghost()
 		if dragging_table_id >= 0:
-			network.request_release(dragging_table_id)
-			_set_cluster_z(dragging_table_id, 0)
+			_drop_piece(dragging_table_id)
 			_select_table_piece(dragging_table_id)
 			dragging_table_id = -1
 		mouse_panning = false
@@ -1463,8 +1499,7 @@ func _handle_touch(event: InputEventScreenTouch) -> void:
 			bank_press_id = -1
 			_clear_ghost()
 		if touch_table_id >= 0:
-			network.request_release(touch_table_id)
-			_set_cluster_z(touch_table_id, 0)
+			_drop_piece(touch_table_id)
 			_select_table_piece(touch_table_id)
 			touch_table_id = -1
 		if fingers.is_empty():
@@ -1567,8 +1602,75 @@ func _place_bank_piece(piece_id: int, screen_position: Vector2) -> void:
 	bank.set_selected(-1)
 	_hide_preview()
 	_select_table_piece(piece_id)
-	network.request_release(piece_id)
+	_drop_piece(piece_id)
 	_select_table_piece(piece_id)
+
+# Ends a drag: loose pieces must never end up hidden, so a dropped group that would completely cover
+# another group of the same size is nudged aside first (bigger groups already sit underneath smaller
+# ones, see _restack_pieces), then the piece is released and the stacking order refreshed.
+func _drop_piece(piece_id: int) -> void:
+	_nudge_clear_of_covered(piece_id)
+	network.request_release(piece_id)
+	_set_cluster_z(piece_id, 0)
+	_restack_pieces()
+	_refresh_type_highlight()
+
+func _cluster_rect(piece_id: int) -> Rect2:
+	var rect := Rect2()
+	var started := false
+	for member_id in manager.cluster_members(piece_id):
+		var member: PuzzlePieceState = manager.pieces[member_id]
+		var center := member.piece_size * 0.5
+		var angle := deg_to_rad(member.current_rotation)
+		for point in member.outline:
+			var world := member.current_position + center + (point - center).rotated(angle)
+			if not started:
+				rect = Rect2(world, Vector2.ZERO)
+				started = true
+			else:
+				rect = rect.expand(world)
+	return rect
+
+func _nudge_clear_of_covered(piece_id: int) -> void:
+	var piece := manager.get_piece(piece_id)
+	if piece == null or not piece.is_on_table:
+		return
+	var my_size := manager.cluster_members(piece_id).size()
+	var mine := _cluster_rect(piece_id)
+	var step := minf(cell.x, cell.y) * 0.25
+	var total := Vector2.ZERO
+	for key in manager.clusters.keys():
+		var members: Array = manager.clusters[key]
+		if piece.cluster_id == key or members.size() != my_size:
+			continue
+		var other := _cluster_rect(members[0])
+		var other_area := other.get_area()
+		if other_area <= 0.0 or mine.intersection(other).get_area() < other_area * 0.55:
+			continue
+		var direction := mine.get_center() - other.get_center()
+		if direction.length() < 1.0:
+			direction = Vector2.RIGHT.rotated(randf() * TAU)
+		direction = direction.normalized()
+		for i in range(60):
+			if mine.intersection(other).get_area() < other_area * 0.2:
+				break
+			mine.position += direction * step
+			total += direction * step
+	if total != Vector2.ZERO:
+		network.request_move(piece_id, piece.current_position + total)
+
+# Bigger groups sit underneath smaller ones, so a loose piece can never be buried under a finished
+# chunk of the puzzle; same-size groups keep their recency order (last touched on top).
+func _restack_pieces() -> void:
+	var entries := []
+	var children := piece_layer.get_children()
+	for i in range(children.size()):
+		var view := children[i] as PuzzlePieceView
+		if view != null:
+			entries.append({"view": view, "size": manager.cluster_members(view.data.piece_id).size(), "index": i})
+	entries.sort_custom(func(a, b): return a.size > b.size or (a.size == b.size and a.index < b.index))
+	for i in range(entries.size()):
+		piece_layer.move_child(entries[i].view, i)
 
 func _on_piece_changed(piece_id: int) -> void:
 	var piece := manager.get_piece(piece_id)
@@ -1584,12 +1686,16 @@ func _on_piece_changed(piece_id: int) -> void:
 		table_views[piece_id] = new_view
 	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
 	table_views[piece_id].refresh_seams()
+	if highlight_kind != "":
+		_refresh_type_highlight()
 	# Keep the hover popup in step with a piece that was just turned (by this player or a remote one).
 	if piece_id == hover_table_id and preview_view != null and not is_equal_approx(preview_view.rotation_degrees, float(piece.current_rotation)):
 		_show_preview(piece_id, get_viewport().get_mouse_position())
 
 func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()
+	_restack_pieces()
+	_refresh_type_highlight()
 	for member_id in member_ids:
 		if table_views.has(member_id):
 			var view: PuzzlePieceView = table_views[member_id]

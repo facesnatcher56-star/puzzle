@@ -5,6 +5,8 @@ signal piece_hovered(piece_id: int, screen_position: Vector2)
 signal piece_unhovered(piece_id: int)
 signal piece_pressed(piece_id: int, screen_position: Vector2)
 signal action_requested(action: String)
+signal action_hovered(action: String)
+signal action_unhovered(action: String)
 
 var pieces: Array[PuzzlePieceState] = []
 var display_order: Array[int] = []
@@ -66,6 +68,8 @@ func _add_button(label: String, action: String) -> void:
 	button.custom_minimum_size.y = 30
 	button.add_theme_font_size_override("font_size", 13)
 	button.pressed.connect(func(): action_requested.emit(action))
+	button.mouse_entered.connect(func(): action_hovered.emit(action))
+	button.mouse_exited.connect(func(): action_unhovered.emit(action))
 	header.add_child(button)
 	buttons[action] = button
 
