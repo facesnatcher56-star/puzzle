@@ -34,6 +34,7 @@ static func load_settings() -> Dictionary:
 
 static func save_settings(fullscreen: bool, size: Vector2i) -> void:
 	var config := ConfigFile.new()
+	config.load(PATH) # keep the audio section
 	config.set_value("display", "fullscreen", fullscreen)
 	config.set_value("display", "width", size.x)
 	config.set_value("display", "height", size.y)
@@ -55,3 +56,32 @@ static func apply_saved() -> void:
 		return
 	var saved := load_settings()
 	apply(saved.fullscreen, Vector2i(saved.width, saved.height))
+
+# --- sound ---
+
+static func load_volume() -> float:
+	var config := ConfigFile.new()
+	if config.load(PATH) != OK:
+		return 0.8
+	return clampf(float(config.get_value("audio", "volume", 0.8)), 0.0, 1.0)
+
+static func save_volume(value: float) -> void:
+	var config := ConfigFile.new()
+	config.load(PATH)
+	config.set_value("audio", "volume", value)
+	config.save(PATH)
+
+static func apply_volume(value: float) -> void:
+	AudioServer.set_bus_volume_db(0, -80.0 if value <= 0.001 else linear_to_db(value))
+
+static func load_vibration() -> bool:
+	var config := ConfigFile.new()
+	if config.load(PATH) != OK:
+		return true
+	return bool(config.get_value("audio", "vibration", true))
+
+static func save_vibration(value: bool) -> void:
+	var config := ConfigFile.new()
+	config.load(PATH)
+	config.set_value("audio", "vibration", value)
+	config.save(PATH)

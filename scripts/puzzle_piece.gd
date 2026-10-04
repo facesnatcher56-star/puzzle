@@ -15,6 +15,10 @@ var selected := false
 # darkens the piece it is joined to.
 var manager: PuzzleManager
 var table_mode := false
+# Everything visible lives under `body`, so a celebration "pop" can scale the piece about its own
+# centre without disturbing the position/rotation the board relies on.
+var body: Node2D
+var pop_tween: Tween
 var shadow: Polygon2D
 var soft_shadow: Polygon2D
 var art: Polygon2D
@@ -26,17 +30,19 @@ func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	data = piece
 	texture_source = source
 	cell_size = size
+	body = Node2D.new()
+	add_child(body)
 	# Two stacked shadows: a wide faint one for ambient falloff and a tight dark one for contact.
 	soft_shadow = Polygon2D.new()
 	soft_shadow.polygon = data.outline
 	soft_shadow.color = Color(0.02, 0.03, 0.04, 0.22)
 	soft_shadow.position = SOFT_SHADOW_OFFSET
-	add_child(soft_shadow)
+	body.add_child(soft_shadow)
 	shadow = Polygon2D.new()
 	shadow.polygon = data.outline
 	shadow.color = Color(0.02, 0.03, 0.04, 0.42)
 	shadow.position = SHADOW_OFFSET
-	add_child(shadow)
+	body.add_child(shadow)
 	if table_mode:
 		soft_shadow.z_index = -1
 		shadow.z_index = -1
@@ -44,10 +50,10 @@ func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	art.polygon = data.outline
 	art.uv = data.uv
 	art.texture = texture_source
-	add_child(art)
+	body.add_child(art)
 	edges = PieceEdges.new()
 	edges.setup(data)
-	add_child(edges)
+	body.add_child(edges)
 
 # Re-reads which sides are joined to a neighbour in the same group; only redraws when that changes.
 func refresh_seams() -> void:
@@ -85,6 +91,24 @@ static func _polygon_area(points: PackedVector2Array) -> float:
 		var b := points[(i + 1) % points.size()]
 		area += a.x * b.y - b.x * a.y
 	return absf(area) * 0.5
+
+# Celebration pop: swells the piece a touch and settles back, optionally after a delay.
+func pulse(amount: float, delay: float = 0.0) -> void:
+	if body == null or not is_inside_tree():
+		return
+	if pop_tween != null and pop_tween.is_valid():
+		pop_tween.kill()
+	var centre := cell_size * 0.5
+	pop_tween = create_tween()
+	if delay > 0.0:
+		pop_tween.tween_interval(delay)
+	pop_tween.tween_method(func(t: float):
+		var factor := 1.0 + amount * sin(PI * t)
+		body.scale = Vector2.ONE * factor
+		body.position = centre * (1.0 - factor), 0.0, 1.0, 0.3).set_trans(Tween.TRANS_SINE)
+	pop_tween.tween_callback(func():
+		body.scale = Vector2.ONE
+		body.position = Vector2.ZERO)
 
 func set_selected(value: bool) -> void:
 	selected = value

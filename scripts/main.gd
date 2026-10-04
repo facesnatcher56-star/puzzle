@@ -45,6 +45,19 @@ var touch_panning := false
 var pinch_distance := 0.0
 var bank_scrolling := false
 var hover_table_id := -1
+var sfx: Sfx
+var fx: BoardFx
+var fx_enabled := DisplayServer.get_name() != "headless"
+var board_glow := 0.0
+var join_flag := false # set when a join happened during the current drop
+var drop_piece_id := -1
+var drop_msec := -100000
+var restoring := false
+var known_cluster := {} # piece id -> cluster size last seen (client-side join detection)
+var client_join_timer: Timer
+var client_join_piece := -1
+var needs_new_slot := false # a completed puzzle's save slot is retired; the next puzzle gets a fresh one
+var vibration_enabled := true
 var highlight_kind := "" # "EDGES" or "CORNERS" while that bank button is hovered/pressed
 var highlight_timer: Timer
 var hovering_filter_button := false
@@ -110,6 +123,8 @@ func _ready() -> void:
 	DisplayServer.window_set_title("Emberbound Jigsaw  -  build " + BuildInfo.ID)
 	SaveManager.migrate_legacy()
 	DisplaySettings.apply_saved()
+	DisplaySettings.apply_volume(DisplaySettings.load_volume())
+	vibration_enabled = DisplaySettings.load_vibration()
 	_apply_mobile_scale()
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	piece_layer.z_index = 1 # resting pieces' shadows sit at z 0, above the board but under every piece
@@ -124,6 +139,16 @@ func _ready() -> void:
 	manager.pieces_joined.connect(_mark_dirty.unbind(2))
 	manager.puzzle_completed.connect(_mark_dirty)
 	manager.bank_changed.connect(_mark_dirty)
+	sfx = Sfx.new()
+	add_child(sfx)
+	fx = BoardFx.new()
+	fx.z_index = 50
+	add_child(fx)
+	client_join_timer = Timer.new()
+	client_join_timer.one_shot = true
+	client_join_timer.wait_time = 0.12
+	client_join_timer.timeout.connect(_on_client_join_timeout)
+	add_child(client_join_timer)
 	network = NetworkSession.new()
 	add_child(network)
 	network.configure(manager, Callable(self, "_puzzle_config"))
@@ -180,8 +205,18 @@ func _draw() -> void:
 	draw_rect(board.grow(7), Color("ab9e83"), true)
 	draw_rect(board, Color("637374"), true)
 	draw_rect(board, Color("d5c8aa"), false, 3)
+	if board_glow > 0.01:
+		draw_rect(board.grow(12), Color(1.0, 0.86, 0.45, 0.5 * board_glow), false, 10)
+		draw_rect(board.grow(26), Color(1.0, 0.86, 0.45, 0.18 * board_glow), false, 22)
+
+func _set_board_glow(value: float) -> void:
+	board_glow = value
+	queue_redraw()
 
 func _start_puzzle(new_seed: bool) -> void:
+	if needs_new_slot and not network.is_client():
+		save_slot = SaveManager.new_slot_id()
+		needs_new_slot = false
 	if new_seed:
 		seed_value += 1
 		if not network.is_client():
@@ -189,6 +224,7 @@ func _start_puzzle(new_seed: bool) -> void:
 		if image_id != "":
 			_apply_image(_pick_random_image())
 	for child in piece_layer.get_children():
+		piece_layer.remove_child(child) # detach now: a queued-free view would still be hit-tested until the frame ends
 		child.queue_free()
 	table_views.clear()
 	selected_table_id = -1
@@ -581,10 +617,29 @@ func _build_settings() -> void:
 		_settings_row("Window", settings_fullscreen_picker)
 		_settings_row("Resolution", settings_resolution_picker)
 		_lobby_caption("Resolution applies to windowed mode. Fullscreen uses your monitor's native resolution.")
+	var volume := HSlider.new()
+	volume.min_value = 0
+	volume.max_value = 100
+	volume.step = 1
+	volume.value = DisplaySettings.load_volume() * 100.0
+	volume.custom_minimum_size = Vector2(200, 28)
+	volume.value_changed.connect(func(value: float):
+		DisplaySettings.apply_volume(value / 100.0)
+		DisplaySettings.save_volume(value / 100.0))
+	volume.drag_ended.connect(func(_changed: bool): sfx.snap(12))
+	_settings_row("Sound", volume)
+	if OS.has_feature("mobile"):
+		var vibration := CheckButton.new()
+		vibration.text = "On"
+		vibration.button_pressed = vibration_enabled
+		vibration.toggled.connect(func(on: bool):
+			vibration_enabled = on
+			DisplaySettings.save_vibration(on))
+		_settings_row("Vibration", vibration)
 	var back := _lobby_button("Back", "", _build_lobby_root)
 	back.custom_minimum_size.y = 46
 
-func _settings_row(label_text: String, picker: OptionButton) -> void:
+func _settings_row(label_text: String, picker: Control) -> void:
 	var row := HBoxContainer.new()
 	lobby_stack.add_child(row)
 	var label := Label.new()
@@ -609,13 +664,15 @@ func _build_lobby_root() -> void:
 		_build_pause_root()
 		return
 	_lobby_heading("JIGSAW", "Piece it together. Alone or with friends.")
-	var saves := SaveManager.list_saves()
+	var saves := _active_saves()
 	if not saves.is_empty():
 		var latest: Dictionary = saves[0].data
 		var slot: String = saves[0].slot
 		_lobby_button("Continue", "%s  •  %s" % [_save_title(latest), _save_detail(latest)], func(): _on_load_slot_pressed(slot))
 	_lobby_button("New Game", "Start a fresh puzzle", _build_lobby_new)
 	_lobby_button("Load Game", "%d saved puzzle%s" % [saves.size(), "" if saves.size() == 1 else "s"] if not saves.is_empty() else "No saved puzzles yet", _build_lobby_load)
+	var finished := Collection.load_all().size()
+	_lobby_button("Collection", "%d completed puzzle%s" % [finished, "" if finished == 1 else "s"] if finished > 0 else "Finished puzzles and stats appear here", _build_lobby_collection)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	lobby_stack.add_child(row)
@@ -651,11 +708,72 @@ func _build_lobby_new() -> void:
 	var back := _lobby_button("Back", "", _build_lobby_root)
 	back.custom_minimum_size.y = 46
 
+func _texture_for_image(id: String) -> Texture2D:
+	return RANDOM_IMAGES[id] if id != "" and RANDOM_IMAGES.has(id) else SOURCE_IMAGE
+
+func _build_lobby_collection() -> void:
+	_clear_lobby_stack()
+	lobby_sub_open = true
+	var entries := Collection.load_all()
+	var totals := Collection.totals(entries)
+	_lobby_heading("COLLECTION", "Every puzzle you've finished")
+	if entries.is_empty():
+		_lobby_caption("Nothing here yet. Finish a puzzle and it is saved to your Collection with its time and stats.")
+	else:
+		var summary := _lobby_caption("%d completed  •  %d pieces placed  •  %s total  •  %d of %d pictures" % [totals.count, totals.pieces, _format_time(totals.time_ms), totals.pictures, RANDOM_IMAGES.size() + 1])
+		summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var best := Collection.best_times(entries)
+		var scroll := ScrollContainer.new()
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		scroll.custom_minimum_size = Vector2(520, minf(entries.size() * 98.0, 340.0))
+		lobby_stack.add_child(scroll)
+		var list := VBoxContainer.new()
+		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		list.add_theme_constant_override("separation", 8)
+		scroll.add_child(list)
+		for entry in entries:
+			var card := PanelContainer.new()
+			card.add_theme_stylebox_override("panel", _lobby_box(Color("1a2831"), Color("2f444e"), 1, 10))
+			card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			list.add_child(card)
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 14)
+			card.add_child(row)
+			var thumb := TextureRect.new()
+			thumb.texture = _texture_for_image(str(entry.get("image_id", "")))
+			thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+			thumb.custom_minimum_size = Vector2(104, 78)
+			thumb.clip_contents = true
+			row.add_child(thumb)
+			var text := VBoxContainer.new()
+			text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			text.alignment = BoxContainer.ALIGNMENT_CENTER
+			row.add_child(text)
+			var title := Label.new()
+			title.text = _save_title(entry)
+			title.add_theme_font_size_override("font_size", 17)
+			title.add_theme_color_override("font_color", Color("f4e5c3"))
+			text.add_child(title)
+			var is_best: bool = int(entry.get("time_ms", 0)) > 0 and int(entry.get("time_ms", 0)) == int(best.get(Collection.bucket(entry), -1))
+			var stats := Label.new()
+			stats.text = "%d pieces  •  rotation %s%s" % [int(entry.pieces), "on" if entry.get("rotation", false) else "off", "  •  online" if entry.get("online", false) else ""]
+			stats.add_theme_font_size_override("font_size", 13)
+			text.add_child(stats)
+			var result := Label.new()
+			result.text = "%s%s  •  %s" % ["★ " if is_best else "", _format_time(int(entry.get("time_ms", 0))), _format_stamp(int(entry.get("completed_at", 0)))]
+			result.add_theme_font_size_override("font_size", 13)
+			result.add_theme_color_override("font_color", Color("e0b96a") if is_best else Color("9fb4b6"))
+			text.add_child(result)
+		_lobby_caption("★ marks your fastest time for that picture, piece count and rotation setting.")
+	var back := _lobby_button("Back", "", _build_lobby_root)
+	back.custom_minimum_size.y = 46
+
 func _build_lobby_load() -> void:
 	_clear_lobby_stack()
 	lobby_sub_open = true
 	_lobby_heading("LOAD GAME", "Pick up where you left off")
-	var saves := SaveManager.list_saves()
+	var saves := _active_saves()
 	if saves.is_empty():
 		_lobby_caption("No saved puzzles yet. Start a new game and it will be saved here automatically.")
 	else:
@@ -724,7 +842,7 @@ func _build_lobby_host() -> void:
 	host_entries = [{"random": false}, {"random": true}]
 	host_game_picker.add_item("New: Emberbound")
 	host_game_picker.add_item("New: Random Puzzle")
-	for entry in SaveManager.list_saves():
+	for entry in _active_saves():
 		host_entries.append({"slot": entry.slot, "data": entry.data})
 		host_game_picker.add_item("Saved: %s  •  %s" % [_save_title(entry.data), _save_detail(entry.data).get_slice("  •  ", 0)])
 	host_game_picker.item_selected.connect(_on_host_game_selected)
@@ -877,6 +995,24 @@ func _load_session(slot: String) -> bool:
 	_restore_puzzle(saved)
 	return true
 
+# Saved games still in progress. Any save that turns out to be finished (completed in an older build, or
+# the app was closed right at the end) is moved into the Collection instead of cluttering this list.
+func _active_saves() -> Array:
+	var active := []
+	for entry in SaveManager.list_saves():
+		if Collection.save_is_complete(entry.data):
+			Collection.add(Collection.entry_from(entry.data, entry.slot, int(entry.data.get("elapsed_ms", 0)), int(entry.data.get("saved_at", 0)), false))
+			SaveManager.delete_slot(entry.slot)
+		else:
+			active.append(entry)
+	return active
+
+func _format_stamp(stamp: int) -> String:
+	var local := Time.get_datetime_dict_from_unix_time(stamp + int(Time.get_time_zone_from_system().bias) * 60)
+	var months := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+	var hour12: int = (local.hour + 11) % 12 + 1
+	return "%s %d, %d  %d:%02d %s" % [months[local.month - 1], local.day, local.year, hour12, local.minute, "AM" if local.hour < 12 else "PM"]
+
 func _save_title(saved: Dictionary) -> String:
 	var saved_image := str(saved.get("image_id", ""))
 	return "Emberbound" if saved_image == "" else "Random  •  " + saved_image.capitalize()
@@ -987,6 +1123,7 @@ func _puzzle_config() -> Dictionary:
 
 func _restore_puzzle(saved: Dictionary) -> void:
 	for child in piece_layer.get_children():
+		piece_layer.remove_child(child) # detach now: a queued-free view would still be hit-tested until the frame ends
 		child.queue_free()
 	table_views.clear()
 	selected_table_id = -1
@@ -1015,7 +1152,12 @@ func _restore_puzzle(saved: Dictionary) -> void:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
 	manager.configure(generated, cell, columns, rows)
+	restoring = true
 	manager.apply_snapshots(saved.pieces) # emits piece_changed for every piece; _on_piece_changed creates each on-table view reactively
+	restoring = false
+	known_cluster.clear()
+	for piece in manager.pieces:
+		known_cluster[piece.piece_id] = manager.cluster_members(piece.piece_id).size()
 	manager.started_at = Time.get_ticks_msec() - int(saved.get("elapsed_ms", 0))
 	if bank.collapsed:
 		bank.toggle_collapsed()
@@ -1414,6 +1556,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 	var picked := _pick_table_piece(world)
 	_select_table_piece(picked)
 	if picked >= 0 and network.request_pickup(picked):
+		sfx.pickup()
 		dragging_table_id = picked
 		drag_offset = world - manager.get_piece(picked).current_position
 		_bring_cluster_forward(picked)
@@ -1610,7 +1753,12 @@ func _place_bank_piece(piece_id: int, screen_position: Vector2) -> void:
 # ones, see _restack_pieces), then the piece is released and the stacking order refreshed.
 func _drop_piece(piece_id: int) -> void:
 	_nudge_clear_of_covered(piece_id)
+	join_flag = false
+	drop_piece_id = piece_id
+	drop_msec = Time.get_ticks_msec()
 	network.request_release(piece_id)
+	if not join_flag:
+		sfx.drop()
 	_set_cluster_z(piece_id, 0)
 	_restack_pieces()
 	_refresh_type_highlight()
@@ -1686,6 +1834,7 @@ func _on_piece_changed(piece_id: int) -> void:
 		table_views[piece_id] = new_view
 	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
 	table_views[piece_id].refresh_seams()
+	_detect_client_join(piece_id)
 	if highlight_kind != "":
 		_refresh_type_highlight()
 	# Keep the hover popup in step with a piece that was just turned (by this player or a remote one).
@@ -1696,11 +1845,83 @@ func _on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	bank.update_counts()
 	_restack_pieces()
 	_refresh_type_highlight()
+	join_flag = true
+	if restoring:
+		return
+	var origin := Vector2.ZERO
+	if drop_piece_id >= 0 and Time.get_ticks_msec() - drop_msec < 600 and drop_piece_id < manager.pieces.size():
+		var dropped: PuzzlePieceState = manager.pieces[drop_piece_id]
+		origin = dropped.current_position + dropped.piece_size * 0.5
+	else:
+		for member_id in member_ids:
+			var member: PuzzlePieceState = manager.pieces[member_id]
+			origin += member.current_position + member.piece_size * 0.5
+		origin /= maxf(1.0, member_ids.size())
+	_celebrate_join(member_ids, origin)
+
+# Snap feedback scales with the group that was just formed: a tick and a ring for small joins, a wave
+# rippling through the group for medium ones, and a shockwave with sparkles and a shake for big ones.
+func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
+	var size := member_ids.size()
+	var total := manager.pieces.size()
+	var level := 0
+	if size >= 8:
+		level = 1
+	if size >= 30:
+		level = 2
+	if size >= maxi(50, total / 2):
+		level = 3
+	sfx.snap(size, level == 3)
+	if vibration_enabled and OS.has_feature("mobile"):
+		Input.vibrate_handheld([25, 45, 80, 140][level])
+	if not fx_enabled:
+		return
+	var gold := Color(1.0, 0.9, 0.6, 0.9)
+	fx.ring(origin, [60.0, 130.0, 230.0, 380.0][level], gold, 0.45 + 0.1 * level, 4.0 + level * 2.0)
+	if level >= 2:
+		fx.ring(origin, [0.0, 0.0, 130.0, 240.0][level], Color(1, 1, 1, 0.7), 0.6, 3.0)
 	for member_id in member_ids:
-		if table_views.has(member_id):
-			var view: PuzzlePieceView = table_views[member_id]
-			view.modulate = Color(1.18, 1.10, 0.85)
-			create_tween().tween_property(view, "modulate", Color.WHITE, 0.28)
+		if not table_views.has(member_id):
+			continue
+		var view: PuzzlePieceView = table_views[member_id]
+		var member: PuzzlePieceState = manager.pieces[member_id]
+		var delay := 0.0
+		if level >= 1:
+			var distance := (member.current_position + member.piece_size * 0.5).distance_to(origin)
+			delay = clampf(distance / 2600.0, 0.0, 0.55)
+		view.pulse([0.05, 0.06, 0.075, 0.09][level], delay)
+		view.modulate = Color(1.18, 1.10, 0.85)
+		create_tween().tween_property(view, "modulate", Color.WHITE, 0.3)
+	if level >= 1:
+		fx.sparkles(origin, [0, 12, 28, 55][level], Color(1.0, 0.92, 0.65, 1.0), [0.0, 220.0, 320.0, 420.0][level])
+	if level >= 2:
+		_shake_camera([0.0, 0.0, 3.0, 6.0][level], 0.28)
+
+func _shake_camera(strength: float, duration: float) -> void:
+	var tween := create_tween()
+	tween.tween_method(func(t: float): camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * strength * (1.0 - t), 0.0, 1.0, duration)
+	tween.tween_callback(func(): camera.offset = Vector2.ZERO)
+
+# Clients never run the snapping code, they just receive piece updates. Notice a group growing and
+# play the same feedback once the burst of updates has settled.
+func _detect_client_join(piece_id: int) -> void:
+	var size := manager.cluster_members(piece_id).size()
+	if not restoring and network.is_client() and size >= 2 and size > int(known_cluster.get(piece_id, 1)):
+		client_join_piece = piece_id
+		client_join_timer.start()
+	known_cluster[piece_id] = size
+
+func _on_client_join_timeout() -> void:
+	if client_join_piece < 0 or not network.is_client():
+		return
+	var members := manager.cluster_members(client_join_piece)
+	if members.size() < 2:
+		return
+	var origin := Vector2.ZERO
+	for member_id in members:
+		var member: PuzzlePieceState = manager.pieces[member_id]
+		origin += member.current_position + member.piece_size * 0.5
+	_celebrate_join(members, origin / members.size())
 
 func _rotate_selected() -> void:
 	if rotation_enabled and selected_table_id >= 0:
@@ -1737,8 +1958,81 @@ func _on_completed() -> void:
 	_select_table_piece(-1)
 	bank.toggle_collapsed() if not bank.collapsed else null
 	var seconds := manager.elapsed_seconds()
-	complete_label.text = "Puzzle Complete  •  %02d:%02d" % [seconds / 60, seconds % 60]
-	complete_banner.visible = true
+	complete_label.text = "Puzzle Complete  •  %s  •  saved to your Collection" % _format_time(seconds * 1000)
+	_record_completion()
+	sfx.complete()
+	if vibration_enabled and OS.has_feature("mobile"):
+		Input.vibrate_handheld(250)
+	if not fx_enabled:
+		complete_banner.visible = true
+		return
+	_play_completion_fx()
+	complete_banner.visible = false
+	complete_banner.modulate.a = 0.0
+	var reveal := create_tween()
+	reveal.tween_interval(2.2)
+	reveal.tween_callback(func(): complete_banner.visible = true)
+	reveal.tween_property(complete_banner, "modulate:a", 1.0, 0.6)
+
+# Moves the finished puzzle out of the saved-games list and into the Collection with its stats.
+func _record_completion() -> void:
+	var config := _puzzle_config()
+	var entry_id := save_slot if save_slot != "" else SaveManager.new_slot_id()
+	Collection.add(Collection.entry_from(config, entry_id, int(config.elapsed_ms), int(Time.get_unix_time_from_system()), network.is_host() or network.is_client()))
+	if save_slot != "":
+		SaveManager.delete_slot(save_slot)
+		save_slot = ""
+		needs_new_slot = true
+	save_dirty = false
+
+# The big finish: the camera pulls back to the whole picture, a wave of pops ripples out from the
+# last piece, a golden light sweeps across, fireworks burst over the board and its frame glows.
+func _play_completion_fx() -> void:
+	var tween := create_tween().set_parallel(true)
+	var viewport_size := get_viewport_rect().size
+	var available := Vector2(viewport_size.x - 64, viewport_size.y - 50 - 85)
+	var fit := minf(available.x / board_size.x, available.y / board_size.y)
+	tween.tween_property(camera, "zoom", Vector2.ONE * fit, 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_property(camera, "position", Vector2(0, (50 - 53) * 0.5 / fit), 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	var origin := Vector2.ZERO
+	if drop_piece_id >= 0 and drop_piece_id < manager.pieces.size():
+		var last: PuzzlePieceState = manager.pieces[drop_piece_id]
+		origin = last.current_position + last.piece_size * 0.5
+	var half_width := board_size.x * 0.5
+	for piece_id in table_views:
+		var view: PuzzlePieceView = table_views[piece_id]
+		var piece: PuzzlePieceState = manager.pieces[piece_id]
+		var centre := piece.current_position + piece.piece_size * 0.5
+		var wave_delay := clampf(centre.distance_to(origin) / board_size.length() * 1.3, 0.0, 1.3)
+		view.pulse(0.07, wave_delay)
+		# golden sweep, left to right, after the wave
+		var sweep_delay := 1.1 + (centre.x + half_width) / board_size.x * 0.9
+		var flash := create_tween()
+		flash.tween_interval(sweep_delay)
+		flash.tween_property(view, "modulate", Color(1.55, 1.4, 1.05), 0.16)
+		flash.tween_property(view, "modulate", Color.WHITE, 0.5)
+	var glow := create_tween()
+	glow.tween_interval(0.8)
+	glow.tween_method(_set_board_glow, 0.0, 1.0, 0.7)
+	glow.tween_method(_set_board_glow, 1.0, 0.35, 1.5)
+	for ring_index in range(3):
+		var ring_tween := create_tween()
+		ring_tween.tween_interval(0.25 + ring_index * 0.35)
+		ring_tween.tween_callback(func(): fx.ring(origin, 500.0 + ring_index * 450.0, Color(1.0, 0.9, 0.6, 0.9), 1.1, 8.0))
+	var burst_colors := [Color(1.0, 0.9, 0.55), Color(1.0, 1.0, 1.0), Color(1.0, 0.7, 0.45), Color(0.7, 0.9, 1.0)]
+	for i in range(12):
+		var burst := create_tween()
+		burst.tween_interval(1.0 + i * 0.16)
+		var spot := Vector2(randf_range(-0.42, 0.42) * board_size.x, randf_range(-0.4, 0.4) * board_size.y)
+		var colour: Color = burst_colors[i % burst_colors.size()]
+		burst.tween_callback(func(): fx.sparkles(spot, 38, colour, 520.0, 1.3, 11.0))
+	_shake_camera(5.0, 0.35)
+
+func _format_time(milliseconds: int) -> String:
+	var seconds := milliseconds / 1000
+	if seconds >= 3600:
+		return "%d:%02d:%02d" % [seconds / 3600, (seconds / 60) % 60, seconds % 60]
+	return "%d:%02d" % [seconds / 60, seconds % 60]
 
 func _set_rotation_enabled(value: bool) -> void:
 	rotation_enabled = value
