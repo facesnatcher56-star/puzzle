@@ -134,6 +134,10 @@ func request_move(piece_id: int, position: Vector2) -> bool:
 	return applied
 
 func request_rotate(piece_id: int) -> bool:
+	# Turning a loose piece does not require holding it (double-tap, R and the Rotate button all act on a
+	# piece that is merely selected); it is only refused while another player is holding it.
+	if not manager.is_free_for(piece_id, local_player_id()):
+		return false
 	var applied := manager.request_rotate(piece_id)
 	if applied and is_host():
 		_broadcast_cluster(piece_id)
@@ -233,10 +237,15 @@ func _rpc_request_rotate(piece_id: int) -> void:
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	var piece := manager.get_piece(piece_id)
-	if piece == null or piece.owner_peer_id != sender:
+	if piece == null:
 		return
-	if manager.request_rotate(piece_id):
-		_broadcast_cluster(piece_id)
+	# Previously this required the sender to be holding the piece, which a client turning a merely
+	# selected piece never is: the host refused, never learned of the turn, and the next pickup
+	# broadcast the old rotation back, undoing it. Accept any free (or self-held) piece, and always
+	# answer with the authoritative state so a refused turn is corrected on the client too.
+	if manager.is_free_for(piece_id, sender):
+		manager.request_rotate(piece_id)
+	_broadcast_cluster(piece_id)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _rpc_request_release(piece_id: int) -> void:

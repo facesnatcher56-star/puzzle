@@ -90,6 +90,24 @@ func _run() -> void:
 	client_network.request_release(0)
 	await _poll_until(func(): return host_manager.get_piece(0).owner_peer_id == 0, 120, "host clears ownership after release")
 
+	# A client turns a loose piece it is not holding (double-tap / Rotate button). The host must learn of
+	# it, and picking the piece up afterwards must not snap the rotation back.
+	var turned_before: int = host_manager.get_piece(0).current_rotation
+	_check(client_network.request_rotate(0), "client can rotate a loose piece it is not holding")
+	await _poll_until(func(): return host_manager.get_piece(0).current_rotation == (turned_before + 90) % 360, 120, "host applies a client's rotation of an unheld piece")
+	_check(client_network.request_pickup(0), "client picks the rotated piece up")
+	await _poll_until(func(): return host_manager.get_piece(0).owner_peer_id == client_id, 120, "host records the pickup after the rotation")
+	for i in range(30):
+		await process_frame
+	_check(client_manager.get_piece(0).current_rotation == (turned_before + 90) % 360, "the rotation does not snap back after picking the piece up")
+	_check(host_manager.get_piece(0).current_rotation == (turned_before + 90) % 360, "the host keeps the rotation after the pickup")
+	client_network.request_release(0)
+	await _poll_until(func(): return host_manager.get_piece(0).owner_peer_id == 0, 120, "host clears ownership again")
+	# A piece held by someone else cannot be turned.
+	host_manager.request_pickup(0, 77)
+	_check(not host_network.request_rotate(0), "a piece held by another player cannot be rotated")
+	host_manager.request_release(0, 77)
+
 	_check(client_network.request_pickup(0), "client re-picks the piece before disconnecting")
 	await _poll_until(func(): return host_manager.get_piece(0).owner_peer_id == client_id, 120, "host confirms the pre-disconnect pickup")
 	client_network.stop()

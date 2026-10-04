@@ -72,6 +72,14 @@ func request_pickup(piece_id: int, player_id: int = 0) -> bool:
 		pieces[member_id].owner_peer_id = player_id
 	return true
 
+# True when nobody else is holding any piece of this group, so `player_id` may act on it.
+func is_free_for(piece_id: int, player_id: int) -> bool:
+	for member_id in cluster_members(piece_id):
+		var owner: int = pieces[member_id].owner_peer_id
+		if owner != 0 and owner != player_id:
+			return false
+	return true
+
 func request_move(piece_id: int, position: Vector2) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table:
