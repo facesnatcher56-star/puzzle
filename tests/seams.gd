@@ -71,6 +71,7 @@ func _run() -> void:
 			_geometry(label, cfg.board, cols, rows, seed_value, cols * rows <= 108 or seed_value in [423486, 1, 2])
 		# snapping is the slow part, so it gets one seed per size (the stuck game's)
 		_snapping(label, cfg.board, cols, rows, 423486)
+		print("seams: %s checked" % label) # progress, so a watcher can tell a slow run from a hung one
 	print("seams test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)
 

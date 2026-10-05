@@ -82,6 +82,7 @@ func _test_themes() -> void:
 func _test_images() -> void:
 	var size := PuzzleCatalog.GENERATED_SIZE
 	for theme in ProceduralImage.theme_ids():
+		print("procedural: checking %s" % theme) # progress, so a watcher can tell a slow run from a hung one
 		var t0 := Time.get_ticks_msec()
 		var img := ProceduralImage.generate(theme, 42, size)
 		var took := Time.get_ticks_msec() - t0
@@ -145,6 +146,7 @@ func _test_puzzles() -> void:
 	SaveManager.save_dir = "user://test_saves_procedural"
 	var expected := [24, 48, 108, 252]
 	for theme in ["dusk", "crystal", "stained", "nebula", "geometric", "sea", "any"]:
+		print("procedural: puzzle from %s" % theme)
 		var session := _fresh_session()
 		session.new_generated_session(theme)
 		_check(session.image_id == "gen:" + theme and session.sizes == PuzzleCatalog.RANDOM_SIZES, "%s: a generated puzzle uses the random-picture piece counts" % theme)

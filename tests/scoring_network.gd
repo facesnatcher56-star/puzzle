@@ -42,7 +42,7 @@ func _run() -> void:
 	host_session.size_index = 1 # 6 x 8
 	host_session.start_puzzle(false)
 	_place(host_manager, [0, 1, 2, 3, 4, 5], Vector2(14, -9))
-	_check(host_session.scoring.score == 900 and host_session.scoring.combo_progress == 3, "host scored the initial six-piece border once: %s" % [host_session.scoring.to_dict()])
+	_check(host_session.scoring.score == roundi(900.0 * RunScoring.streak_multiplier(host_session.scoring.streak)) and host_session.scoring.streak <= 6, "host scored the initial six-piece border once: %s" % [host_session.scoring.to_dict()])
 
 	var client_root := Node.new()
 	root.add_child(client_root)
@@ -94,8 +94,7 @@ func _run() -> void:
 	var power_event: Dictionary = host_awards.back()
 	_check(moved.size() == 6 and host_awards.size() == before_jackpot + 1 and power_event.piece_count == 6 and power_event.source == PuzzleManager.ConnectionSource.POWER, "host generated one power jackpot event")
 	await _wait_until(func(): return client_awards.size() == host_awards.size() and client_session.scoring.to_dict() == host_session.scoring.to_dict(), 6.0, "client receives loose joins and the jackpot")
-	var tier_before := int(power_event.combo_before)
-	_check(client_awards.back() == power_event and power_event.score_gain == roundi(900.0 * RunScoring.SCORE_MULTIPLIERS[tier_before]) and power_event.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[tier_before] * 0.5), "client sees identical score, half Charge and combo event: %s" % [power_event])
+	_check(client_awards.back() == power_event and power_event.score_gain == roundi(900.0 * float(power_event.multiplier)) and power_event.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(power_event.combo_after)] * 0.5), "client sees identical score, half Charge and combo event: %s" % [power_event])
 	var received_state := client_session.scoring.to_dict()
 	client_network.scoring_sync_received.emit(received_state, power_event)
 	for i in range(15):

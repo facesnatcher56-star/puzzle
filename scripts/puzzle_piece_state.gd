@@ -24,6 +24,9 @@ var is_on_table: bool = false
 var cluster_id: int = -1
 var tray_id: int = 0
 var owner_peer_id: int = 0
+# True once this piece has been dropped within snapping distance of another piece without joining it. A piece
+# that is solo and has never done that can still score a first-try placement.
+var attempted: bool = false
 # Fixed to the board: part of a completed edge section (or attached to one). Locked pieces never move.
 var is_locked: bool = false
 var outline: PackedVector2Array
@@ -39,7 +42,7 @@ func snapshot() -> Dictionary:
 		"rotation": current_rotation, "snapped": is_snapped,
 		"cluster_id": cluster_id,
 		"on_table": is_on_table, "tray_id": tray_id,
-		"owner_peer_id": owner_peer_id, "locked": is_locked
+		"owner_peer_id": owner_peer_id, "locked": is_locked, "attempted": attempted
 	}
 
 # int fields are cast explicitly because a save file round-trips through JSON,
@@ -53,3 +56,4 @@ func apply_snapshot(data: Dictionary) -> void:
 	tray_id = int(data.tray_id)
 	owner_peer_id = int(data.get("owner_peer_id", 0))
 	is_locked = bool(data.get("locked", false))
+	attempted = bool(data.get("attempted", false))

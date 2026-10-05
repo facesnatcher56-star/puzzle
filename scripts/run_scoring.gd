@@ -3,6 +3,14 @@ extends RefCounted
 
 # One shared run ledger. Only the solo game or host turns PuzzleManager events into rewards.
 # Clients apply the host's serialized state and event; piece snapshots never grant rewards.
+#
+# The streak: a piece that is solo and has never been dropped within snapping distance of another piece, and
+# that the player then lets go of where it joins, is a first-try placement. Each one extends the streak, and the
+# streak multiplies every score and Charge award, exponentially (STREAK_BASE ^ streak, up to STREAK_CAP). Pieces
+# can be rotated and dropped in the open as often as you like without costing anything. The streak ends -- it is
+# never subtracted from, and nothing decays with time -- only when such a piece is dropped near another piece
+# and does not join. Joins made by powers, by clusters, or by pieces that already had an attempt neither extend
+# nor end it.
 signal state_changed
 signal awarded(event: Dictionary)
 signal tier_rose(tier: int)
@@ -10,7 +18,9 @@ signal anchors_completed
 
 enum Tier { NORMAL, WARM, HOT, ON_FIRE }
 
-const SCORE_MULTIPLIERS := [1.0, 1.25, 1.5, 2.0]
+const STREAK_BASE := 1.12 # each first-try placement multiplies the next awards by this much more...
+const STREAK_CAP := 20.0 # ...up to this
+const TIER_STREAKS := [0, 3, 6, 10] # the streak at which each tier starts (the tier drives the flame, sounds and Charge)
 const CHARGE_MULTIPLIERS := [1.0, 1.1, 1.2, 1.35]
 
 var manager: PuzzleManager
@@ -18,25 +28,32 @@ var network: NetworkSession
 var score := 0
 var charge := 0
 var power_charges := 0
-var combo_progress := 0
+var streak := 0
+var best_streak := 0
 var revision := 0
 var anchors_rewarded := false
 var _awarded_ids := {}
 var _legacy_anchors_unset := false
+var _candidate := -1 # the solo piece whose first-try drop is being resolved
+var _candidate_counted := false
 
 func setup(p_manager: PuzzleManager, p_network: NetworkSession) -> void:
 	manager = p_manager
 	network = p_network
 	manager.main_puzzle_connected.connect(_on_main_connected)
 	manager.loose_puzzle_connected.connect(_on_loose_connected)
-	manager.failed_connection_attempt.connect(_on_failed_attempt)
+	manager.first_try_started.connect(_on_first_try_started)
+	manager.first_try_ended.connect(_on_first_try_ended)
 	network.scoring_sync_received.connect(_on_remote_sync)
 
 func reset() -> void:
 	score = 0
 	charge = 0
 	power_charges = 0
-	combo_progress = 0
+	streak = 0
+	best_streak = 0
+	_candidate = -1
+	_candidate_counted = false
 	revision = 0
 	anchors_rewarded = false
 	_legacy_anchors_unset = false
@@ -44,13 +61,23 @@ func reset() -> void:
 	state_changed.emit()
 
 func tier() -> int:
-	if combo_progress >= 10:
-		return Tier.ON_FIRE
-	if combo_progress >= 6:
-		return Tier.HOT
-	if combo_progress >= 3:
-		return Tier.WARM
+	return tier_for(streak)
+
+static func tier_for(streak_length: int) -> int:
+	for i in range(TIER_STREAKS.size() - 1, 0, -1):
+		if streak_length >= TIER_STREAKS[i]:
+			return i
 	return Tier.NORMAL
+
+# The score and Charge multiplier of a streak: exponential, so a long unbroken run is worth a great deal.
+static func streak_multiplier(streak_length: int) -> float:
+	return minf(pow(STREAK_BASE, maxi(0, streak_length)), STREAK_CAP)
+
+func multiplier() -> float:
+	return streak_multiplier(streak)
+
+static func format_multiplier(value: float) -> String:
+	return "%.2f" % value if value < 10.0 else "%.1f" % value
 
 static func tier_name(value: int) -> String:
 	return ["NORMAL", "WARM", "HOT", "ON FIRE"][clampi(value, 0, 3)]
@@ -79,15 +106,6 @@ static func base_charge(count: int) -> int:
 		return 8
 	return 5
 
-static func combo_gain(count: int) -> int:
-	if count >= 7:
-		return 4
-	if count >= 4:
-		return 3
-	if count >= 2:
-		return 2
-	return 1
-
 func _on_main_connected(piece_ids: Array, source: int) -> void:
 	if network.is_client():
 		return
@@ -110,14 +128,40 @@ func award_connection(piece_ids: Array, source: int) -> Dictionary:
 		return {}
 	return _grant(fresh.size(), source, fresh, "MAIN")
 
+func _on_first_try_started(piece_id: int) -> void:
+	if network.is_client():
+		return
+	_candidate = piece_id
+	_candidate_counted = false
+
+# The drop is resolved. If the piece was dropped near another piece and did not join, the streak ends there.
+func _on_first_try_ended(_piece_id: int, missed: bool) -> void:
+	if network.is_client():
+		return
+	var was_counted := _candidate_counted
+	_candidate = -1
+	_candidate_counted = false
+	if missed and not was_counted and streak > 0:
+		streak = 0
+		revision += 1
+		state_changed.emit()
+		network.announce_scoring(to_dict(), {})
+
 func _grant(count: int, source: int, piece_ids: Array, kind: String) -> Dictionary:
 	var previous_tier := tier()
-	var score_gain := roundi(float(count * 100 + cluster_bonus(count)) * SCORE_MULTIPLIERS[previous_tier])
+	# a first-try placement extends the streak before it is paid, so it earns the longer streak's multiplier
+	var first_try := _candidate >= 0 and not _candidate_counted and piece_ids.has(_candidate)
+	if first_try:
+		_candidate_counted = true
+		streak += 1
+		best_streak = maxi(best_streak, streak)
+	var current_tier := tier()
+	var multiplier_now := multiplier()
+	var score_gain := roundi(float(count * 100 + cluster_bonus(count)) * multiplier_now)
 	var efficiency := 0.5 if source == PuzzleManager.ConnectionSource.POWER else 1.0
-	var charge_gain := roundi(float(base_charge(count)) * CHARGE_MULTIPLIERS[previous_tier] * efficiency)
+	var charge_gain := roundi(float(base_charge(count)) * CHARGE_MULTIPLIERS[current_tier] * efficiency)
 	score += score_gain
 	var gained_charges := _add_charge(charge_gain)
-	combo_progress += combo_gain(count)
 	var completed_anchors := kind == "MAIN" and not anchors_rewarded and manager.anchored_corner_count() == 4
 	if completed_anchors:
 		anchors_rewarded = true
@@ -126,14 +170,15 @@ func _grant(count: int, source: int, piece_ids: Array, kind: String) -> Dictiona
 	var event := {
 		"piece_ids": piece_ids, "piece_count": count, "source": source, "kind": kind,
 		"score_gain": score_gain, "charge_gain": charge_gain, "charges_gained": gained_charges,
-		"combo_before": previous_tier, "combo_after": tier(), "anchors_completed": completed_anchors
+		"combo_before": previous_tier, "combo_after": current_tier, "anchors_completed": completed_anchors,
+		"first_try": first_try, "streak": streak, "multiplier": multiplier_now
 	}
 	state_changed.emit()
 	awarded.emit(event)
 	if completed_anchors:
 		anchors_completed.emit()
-	if tier() > previous_tier:
-		tier_rose.emit(tier())
+	if current_tier > previous_tier:
+		tier_rose.emit(current_tier)
 	network.announce_scoring(to_dict(), event)
 	return event
 
@@ -158,14 +203,6 @@ func _add_charge(amount: int) -> int:
 	charge = total % 100
 	return gained
 
-func _on_failed_attempt() -> void:
-	if network.is_client() or combo_progress == 0:
-		return
-	combo_progress -= 1
-	revision += 1
-	state_changed.emit()
-	network.announce_scoring(to_dict(), {})
-
 func _on_remote_sync(state: Dictionary, event: Dictionary) -> void:
 	if not network.is_client() or int(state.get("revision", -1)) <= revision:
 		return
@@ -181,14 +218,15 @@ func to_dict() -> Dictionary:
 	var ids := _awarded_ids.keys()
 	ids.sort()
 	return {"score": score, "charge": charge, "power_charges": power_charges,
-		"combo_progress": combo_progress, "revision": revision, "awarded_ids": ids,
+		"streak": streak, "best_streak": best_streak, "revision": revision, "awarded_ids": ids,
 		"anchors_rewarded": anchors_rewarded}
 
 func from_dict(data: Dictionary) -> void:
 	score = maxi(0, int(data.get("score", 0)))
 	charge = clampi(int(data.get("charge", 0)), 0, 99)
 	power_charges = maxi(0, int(data.get("power_charges", 0)))
-	combo_progress = maxi(0, int(data.get("combo_progress", 0)))
+	streak = maxi(0, int(data.get("streak", 0)))
+	best_streak = maxi(streak, int(data.get("best_streak", 0)))
 	revision = maxi(0, int(data.get("revision", 0)))
 	anchors_rewarded = bool(data.get("anchors_rewarded", false))
 	_legacy_anchors_unset = not data.has("anchors_rewarded")

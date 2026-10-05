@@ -8,7 +8,11 @@ signal puzzle_completed
 signal group_locked(cluster_id: int, member_ids: Array, side_names: Array)
 signal main_puzzle_connected(piece_ids: Array, source: int)
 signal loose_puzzle_connected(piece_count: int, member_ids: Array, source: int)
-signal failed_connection_attempt
+# A first-try placement is in progress: `piece_id` is a solo piece that has never been dropped near another piece,
+# and the player has just let go of it. Joins that happen next belong to that attempt. `first_try_ended` follows
+# once the drop is resolved; `missed` is true if it was dropped within snapping distance of another piece without joining.
+signal first_try_started(piece_id: int)
+signal first_try_ended(piece_id: int, missed: bool)
 
 enum ConnectionSource { MANUAL, POWER }
 
@@ -132,13 +136,24 @@ func request_release(piece_id: int, player_id: int = 0, count_failed_attempt: bo
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table or piece.is_locked or piece.owner_peer_id != player_id:
 		return false
-	var clear_attempt := count_failed_attempt and _near_join_target(piece_id)
-	var locked_before := locked_count()
-	for member_id in cluster_members(piece_id):
+	# `count_failed_attempt` is false for a drop that was not a deliberate placement (a menu opened mid-drag, or the
+	# group was barely moved). A deliberate drop of a solo piece that has never been near another piece is the one
+	# chance at a first-try placement; dropping it anywhere not near another piece, as often as you like, costs nothing.
+	var group := cluster_members(piece_id)
+	var eligible := count_failed_attempt and group.size() == 1 and not piece.attempted
+	var near := count_failed_attempt and _near_other_piece(piece_id)
+	if eligible:
+		first_try_started.emit(piece_id)
+	for member_id in group:
 		pieces[member_id].owner_peer_id = 0
 	var joined := snap_piece(piece_id)
-	if not joined and locked_count() == locked_before and clear_attempt:
-		failed_connection_attempt.emit()
+	var attached := piece.is_locked or cluster_members(piece_id).size() > 1
+	var missed := near and not attached
+	if missed:
+		for member_id in group:
+			pieces[member_id].attempted = true
+	if eligible:
+		first_try_ended.emit(piece_id, missed)
 	return joined
 
 # Used when a networked peer disconnects mid-drag so their held pieces don't stay locked forever.
@@ -427,23 +442,20 @@ func _group_is_held(piece: PuzzlePieceState) -> bool:
 			return true
 	return false
 
-func _near_join_target(piece_id: int) -> bool:
-	var tolerance := minf(cell_size.x, cell_size.y) * 0.35
-	for id in cluster_members(piece_id):
+# True when any piece of this group is within snapping distance of a piece that is not in the group: their
+# outlines' boxes are no further apart than a piece may sit from its true spot and still join.
+func _near_other_piece(piece_id: int) -> bool:
+	var tolerance := minf(cell_size.x, cell_size.y) * SNAP_TOLERANCE
+	var own := cluster_members(piece_id)
+	for id in own:
 		var member: PuzzlePieceState = pieces[id]
 		var centre := member.current_position + member.piece_size * 0.5
-		var correct_centre := member.correct_position + member.piece_size * 0.5
-		for side in range(4):
-			var neighbor_id := _correct_neighbor(member, side)
-			if neighbor_id < 0:
+		for other in pieces:
+			if not other.is_on_table or other.cluster_id == member.cluster_id:
 				continue
-			var neighbor: PuzzlePieceState = pieces[neighbor_id]
-			if not neighbor.is_on_table or neighbor.cluster_id == member.cluster_id:
-				continue
-			var neighbor_centre := neighbor.current_position + neighbor.piece_size * 0.5
-			var neighbor_correct_centre := neighbor.correct_position + neighbor.piece_size * 0.5
-			var expected := neighbor_centre + (correct_centre - neighbor_correct_centre).rotated(deg_to_rad(neighbor.current_rotation))
-			if centre.distance_to(expected) <= tolerance:
+			var gap := (member.piece_size + other.piece_size) * 0.5 + Vector2(tolerance, tolerance)
+			var apart := (other.current_position + other.piece_size * 0.5 - centre).abs()
+			if apart.x <= gap.x and apart.y <= gap.y:
 				return true
 	return false
 

@@ -126,7 +126,16 @@ func _test_layouts() -> void:
 				small_count += 1 if zone.area() <= 2 else 0
 				big_count += 1 if zone.area() >= 9 else 0
 			var share := float(covered) / total
-			_check(share >= 0.52 and share <= 0.68, "about 60%% of the %s grid is powered (seed %d: %.2f)" % [grid, seed_value, share])
+			# about 60%; a very small board needs more of its cells to keep every side covered
+			var top := 0.66 if total >= 200 else (0.70 if total >= 96 else 0.80)
+			_check(share >= 0.52 and share <= top, "about 60%% of the %s grid is powered (seed %d: %.2f)" % [grid, seed_value, share])
+			# and spread: no sparse region, no side of the board without powers, no big dead area
+			var regions := PowerLayout.region_coverage(zones, grid.x, grid.y)
+			var sides := PowerLayout.side_coverage(zones, grid.x, grid.y)
+			_check(regions.min() >= 0.38, "no part of the %s board is left sparse (seed %d: worst region %.2f)" % [grid, seed_value, regions.min()])
+			_check(sides.min() >= 0.38, "every side of the %s board has powers (seed %d: worst side %.2f)" % [grid, seed_value, sides.min()])
+			var empty := PowerLayout.largest_empty_rectangle(zones, grid.x, grid.y)
+			_check(empty <= maxi(4, int(total * 0.09)), "no big dead area on the %s board (seed %d: %d empty cells in a rectangle)" % [grid, seed_value, empty])
 			region_total += zones.size()
 			# zones that touch: neighbouring cells belonging to two different zones
 			var touching := {}

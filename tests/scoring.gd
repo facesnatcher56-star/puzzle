@@ -46,7 +46,7 @@ func _top(m: PuzzleManager) -> void:
 	_place(m, [0, 1, 2, 3, 4, 5, 6, 7], Vector2(14, -9))
 
 func _run() -> void:
-	await _test_manual_combo_and_failures()
+	await _test_first_try_streak()
 	_test_power_jackpots()
 	_test_opening_anchors_and_pulse()
 	_test_charge_overflow_and_save()
@@ -56,65 +56,88 @@ func _run() -> void:
 		child.free()
 	quit(1 if failures > 0 else 0)
 
-func _test_manual_combo_and_failures() -> void:
+func _test_first_try_streak() -> void:
 	var rig := _rig()
-	_top(rig.manager)
-	_check(rig.awards.size() == 1 and int(rig.awards[0].piece_count) == 8 and rig.session.scoring.score == 1550, "first full border produces one 8-piece main-puzzle award")
-	rig.session.scoring.reset()
-	rig.awards.clear()
-	rig.connections.clear()
 	var m := rig.manager
-	_place(m, [8], Vector2(11, 7))
-	_check(rig.awards.size() == 1 and rig.awards[0].piece_ids == [8] and int(rig.awards[0].score_gain) == 100, "a single manual attachment scores 100 once")
-	_check(rig.session.scoring.charge == 5 and rig.session.scoring.combo_progress == 1, "single attachment gives full Charge and combo progress")
-	_place(m, [9, 10, 11, 17, 18, 19], Vector2(900, 650))
-	_check(rig.awards.size() > 1 and m.cluster_members(9).size() == 6 and rig.session.scoring.score > 100, "building a disconnected cluster scores before it reaches the board")
-	for event in rig.awards.slice(1):
-		_check(event.kind == "LOOSE" and event.charge_gain > 0, "floating joins grant Score and Charge")
-	var loose_score := rig.session.scoring.score
-	m.request_release(9)
-	_check(rig.session.scoring.score == loose_score, "releasing an already joined loose cluster gives no repeat award")
-	rig.session.scoring.from_dict({"score": 100, "charge": 5, "combo_progress": 1, "awarded_ids": [8]})
-	rig.awards.clear()
+	var scoring := rig.session.scoring
+	# no multiplier before any streak
+	_check(RunScoring.streak_multiplier(0) == 1.0 and is_equal_approx(RunScoring.streak_multiplier(1), 1.12) and is_equal_approx(RunScoring.streak_multiplier(10), pow(1.12, 10)), "the multiplier is exponential in the streak")
+	_check(is_equal_approx(RunScoring.streak_multiplier(5) / RunScoring.streak_multiplier(4), RunScoring.streak_multiplier(9) / RunScoring.streak_multiplier(8)) and RunScoring.streak_multiplier(80) == RunScoring.STREAK_CAP, "...growing by the same factor each step, up to a cap")
+	_check(RunScoring.tier_for(2) == RunScoring.Tier.NORMAL and RunScoring.tier_for(3) == RunScoring.Tier.WARM and RunScoring.tier_for(6) == RunScoring.Tier.HOT and RunScoring.tier_for(10) == RunScoring.Tier.ON_FIRE, "streak length sets the flame tier")
+	# a solo piece anchored on its corner, dropped where it belongs, is a first-try placement
+	_place(m, [0], Vector2(9, 6))
+	_check(scoring.streak == 1 and rig.awards.size() == 1 and rig.awards[0].first_try and rig.awards[0].score_gain == roundi(100.0 * RunScoring.streak_multiplier(1)), "a first-try placement starts the streak and is paid at the new multiplier")
+	_place(m, [1], Vector2(11, 7))
+	_check(scoring.streak == 2 and rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(2)) and rig.awards.back().first_try, "the next first-try placement is worth more")
+	_place(m, [2], Vector2(11, 7))
+	_check(scoring.streak == 3 and scoring.tier() == RunScoring.Tier.WARM and rig.awards.back().streak == 3, "three in a row reaches WARM")
+	# rotating a piece and dropping it in the open, as often as you like, keeps the streak and the chance
+	var score_before := scoring.score
+	m.request_place_from_bank(9, Vector2(2300, 1700))
+	for drop in range(4):
+		m.request_pickup(9)
+		m.request_rotate(9)
+		m.request_move(9, Vector2(1800 + drop * 160, 1500 - drop * 120))
+		m.request_release(9)
+	_check(scoring.streak == 3 and not m.pieces[9].attempted and scoring.score == score_before, "rotating and dropping a piece away from the others costs nothing")
+	await create_timer(0.15).timeout
+	_check(scoring.streak == 3, "waiting does not end the streak")
 	m.request_pickup(9)
+	while m.pieces[9].current_rotation != 0:
+		m.request_rotate(9)
 	m.request_move(9, m.pieces[9].correct_position + Vector2(10, 6))
 	m.request_release(9)
-	_check(rig.awards.size() == 1 and rig.connections.size() == 2 and rig.awards[0].piece_count == 6 and rig.awards[0].piece_ids.size() == 6, "six newly attached pieces form one board event")
-	_check(rig.awards[0].score_gain == 900 and rig.awards[0].charge_gain == 15 and rig.session.scoring.score == 1000, "6-piece board bonus and full manual Charge are correct")
-	_check(rig.session.scoring.combo_progress == 4 and rig.session.scoring.tier() == RunScoring.Tier.WARM, "cluster progress reaches WARM")
-	var before := rig.session.scoring.to_dict()
-	_check(rig.session.scoring.award_connection([9, 10, 11], PuzzleManager.ConnectionSource.MANUAL).is_empty() and rig.session.scoring.to_dict() == before, "an already awarded piece cannot score twice")
-	_place(m, [12], Vector2(11, 7))
-	_check(rig.awards.back().score_gain == 125 and rig.awards.back().charge_gain == 6, "WARM applies 1.25 score and 1.1 Charge multipliers")
-	_place(m, [13], Vector2(11, 7))
-	_check(rig.session.scoring.tier() == RunScoring.Tier.HOT, "progress six reaches HOT")
-	_place(m, [14], Vector2(11, 7))
-	_check(rig.awards.back().score_gain == 150 and rig.awards.back().charge_gain == 6, "HOT applies 1.5 score and 1.2 Charge multipliers")
-	var progress_before_wait := rig.session.scoring.combo_progress
-	await create_timer(0.15).timeout
-	_check(rig.session.scoring.combo_progress == progress_before_wait, "waiting does not decay combo")
-	for id in [15, 16, 24]:
-		_place(m, [id], Vector2(11, 7))
-	_check(rig.session.scoring.tier() == RunScoring.Tier.ON_FIRE, "progress ten reaches ON FIRE")
-	_place(m, [32], Vector2(11, 7))
-	_check(rig.awards.back().score_gain == 200 and rig.awards.back().charge_gain == 7, "ON FIRE applies 2x score and 1.35x Charge")
-	var count_before := rig.awards.size()
-	var progress_before := rig.session.scoring.combo_progress
-	m.request_place_from_bank(22, m.pieces[22].correct_position + Vector2(m.cell_size.x * 0.28, 0))
-	m.request_release(22, 0, false)
-	_check(rig.session.scoring.combo_progress == progress_before, "a non-attempt release does not punish combo")
-	m.request_release(22)
-	_check(rig.awards.size() == count_before and rig.session.scoring.combo_progress == progress_before - 1, "a clear failed placement near the main puzzle reduces combo once")
-	m.request_move(22, Vector2(2400, 1600))
-	m.request_release(22)
-	_check(rig.session.scoring.combo_progress == progress_before - 1, "ordinary organization away from the target does not lose combo")
-	var loose := _rig(122)
-	loose.session.scoring.from_dict({"combo_progress": 3})
-	loose.manager.request_place_from_bank(0, Vector2(1800, 700))
-	loose.manager.request_place_from_bank(1, Vector2(1800, 700) + loose.manager.pieces[1].correct_position - loose.manager.pieces[0].correct_position)
-	loose.manager.request_rotate(1)
-	loose.manager.request_release(1)
-	_check(loose.session.scoring.combo_progress == 2, "a wrong-orientation attempt beside a loose correct neighbor reduces combo")
+	_check(m.pieces[9].is_locked and scoring.streak == 4 and rig.awards.back().first_try, "...and it still counts as a first-try placement when it goes in")
+	# dropped beside another piece without joining: the streak ends, but nothing is taken away
+	score_before = scoring.score
+	m.request_place_from_bank(3, m.pieces[3].correct_position + Vector2(11, 7))
+	m.request_pickup(3)
+	m.request_rotate(3) # the wrong way up, right beside the border
+	m.request_release(3)
+	_check(not m.pieces[3].is_locked and m.pieces[3].attempted, "a piece dropped near another one without joining has had its attempt")
+	_check(scoring.streak == 0 and scoring.score == score_before and scoring.best_streak == 4, "the streak ends, the score is untouched, and the best streak is remembered")
+	# its later join earns the normal score and does not restart the streak
+	m.request_pickup(3)
+	while m.pieces[3].current_rotation != 0:
+		m.request_rotate(3)
+	m.request_move(3, m.pieces[3].correct_position + Vector2(11, 7))
+	m.request_release(3)
+	_check(m.pieces[3].is_locked and scoring.streak == 0 and not rig.awards.back().first_try and rig.awards.back().score_gain == 100, "a piece that has had an attempt joins for the plain score and no streak")
+	# the next fresh piece starts a new streak
+	_place(m, [4], Vector2(11, 7))
+	_check(scoring.streak == 1 and rig.awards.back().first_try, "a fresh piece starts the streak again")
+	# a release that was not a deliberate placement is no attempt at all
+	m.request_place_from_bank(12, m.pieces[12].correct_position + Vector2(m.cell_size.x * 0.28, 0))
+	m.request_pickup(12)
+	m.request_release(12, 0, false)
+	_check(not m.pieces[12].attempted and scoring.streak == 1, "letting go without really placing is not an attempt")
+	# moving a joined group never touches the streak, even beside other pieces
+	_place(m, [20, 21], Vector2(1500, 900))
+	var group_streak := scoring.streak
+	m.request_pickup(20)
+	m.request_move(20, m.pieces[20].correct_position + Vector2(m.cell_size.x * 0.4, 0))
+	m.request_release(20)
+	_check(scoring.streak == group_streak, "dropping a joined group near others without joining does not end the streak")
+	# powers neither extend nor end it, and are still paid at the current multiplier
+	scoring.from_dict({"streak": 5, "best_streak": 5, "score": 0})
+	var strike_awards := rig.awards.size()
+	m.strike_piece(10)
+	_check(scoring.streak == 5 and rig.awards.size() > strike_awards and not rig.awards.back().first_try and rig.awards.back().source == PuzzleManager.ConnectionSource.POWER, "a power's join leaves the streak alone")
+	_check(rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(5)), "...but is paid at the streak's multiplier")
+	# nothing in scoring ever goes down
+	var previous := scoring.score
+	for id in [30, 31, 32]:
+		m.request_place_from_bank(id, Vector2(1600 + id * 5, 1000))
+		m.request_pickup(id)
+		m.request_release(id)
+		_check(scoring.score >= previous, "the score never falls")
+		previous = scoring.score
+	# attempts are part of the saved state
+	var snap: Dictionary = m.pieces[3].snapshot()
+	_check(bool(snap.attempted), "a piece's attempt is saved")
+	var other := _rig(124)
+	other.manager.pieces[3].apply_snapshot(snap)
+	_check(other.manager.pieces[3].attempted, "...and restored")
 
 func _test_power_jackpots() -> void:
 	var lightning_rig := _rig(117)
@@ -129,7 +152,7 @@ func _test_power_jackpots() -> void:
 	var moved := lightning.apply_strike(13)
 	_check(moved.size() == 6 and lightning_rig.awards.size() == 1, "Lightning moves six joined pieces in one scoring event")
 	_check(lightning_rig.awards[0].source == PuzzleManager.ConnectionSource.POWER and lightning_rig.awards[0].score_gain == 900 and lightning_rig.awards[0].charge_gain == 8, "Lightning jackpot gets full score and half Charge")
-	_check(lightning_rig.session.scoring.combo_progress == 3 and lightning_rig.manager.is_joined_side(12, 1), "Lightning jackpot raises combo and preserves joins")
+	_check(lightning_rig.session.scoring.streak == 0 and lightning_rig.manager.is_joined_side(12, 1), "Lightning jackpot leaves the streak alone and preserves joins")
 	var magnet_rig := _rig(118)
 	var magnet_zone := PowerZone.make(8, 6, 0, 0, 2, 2, PowerZone.Kind.MAGNET)
 	magnet_rig.session.power_zones = [magnet_zone]
@@ -149,8 +172,7 @@ func _test_power_jackpots() -> void:
 	_check(magnet_zone.state == PowerZone.State.DONE and magnet_jackpots.size() == 1, "Magnet pulls a shared-perimeter cluster and awards it once")
 	if not magnet_jackpots.is_empty():
 		var jackpot: Dictionary = magnet_jackpots[0]
-		var tier_before := int(jackpot.combo_before)
-		_check(jackpot.score_gain == roundi(900.0 * RunScoring.SCORE_MULTIPLIERS[tier_before]) and jackpot.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[tier_before] * 0.5), "Magnet jackpot gets full score and half Charge at the active combo tier")
+		_check(jackpot.score_gain == roundi(900.0 * float(jackpot.multiplier)) and jackpot.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(jackpot.combo_after)] * 0.5), "Magnet jackpot gets full score at the streak's multiplier and half Charge at the active tier")
 	_check(magnet_rig.manager.is_joined_side(10, 2), "Magnet jackpot keeps the cluster joins")
 
 func _test_opening_anchors_and_pulse() -> void:
@@ -182,7 +204,7 @@ func _test_charge_overflow_and_save() -> void:
 	var source: Texture2D = load("res://assets/emberbound.png")
 	var board := Vector2(1122, 1402)
 	huge.manager.configure(PuzzleGenerator.generate(source, 10, 25, 120, board, false), Vector2(board.x / 10, board.y / 25), 10, 25)
-	huge.session.scoring.from_dict({"charge": 90, "combo_progress": 10})
+	huge.session.scoring.from_dict({"charge": 90, "streak": 10})
 	var all := []
 	for piece in huge.manager.pieces:
 		piece.is_locked = true
@@ -197,7 +219,7 @@ func _test_charge_overflow_and_save() -> void:
 	var loaded_manager := PuzzleManager.new()
 	root.add_child(loaded)
 	loaded.setup(loaded_manager, rig.network)
-	_check(loaded.load_session("scoring_test") and loaded.scoring.to_dict() == saved_state, "score, Charge, stored charges, combo and awarded IDs survive save/load")
+	_check(loaded.load_session("scoring_test") and loaded.scoring.to_dict() == saved_state, "score, Charge, stored charges, streak and awarded IDs survive save/load")
 	var score_before := loaded.scoring.score
 	_check(loaded.scoring.award_connection([8, 9], PuzzleManager.ConnectionSource.MANUAL).is_empty() and loaded.scoring.score == score_before, "loading cannot re-award earlier connections")
 	var legacy := rig.session.puzzle_config()
@@ -209,7 +231,7 @@ func _test_charge_overflow_and_save() -> void:
 	root.add_child(old)
 	old.setup(PuzzleManager.new(), rig.network)
 	old.restore_puzzle(legacy)
-	_check(old.scoring.score == 0 and old.scoring.charge == 0 and old.scoring.power_charges == 0 and old.scoring.combo_progress == 0, "older saves initialize scoring safely")
+	_check(old.scoring.score == 0 and old.scoring.charge == 0 and old.scoring.power_charges == 0 and old.scoring.streak == 0, "older saves initialize scoring safely")
 	SaveManager.delete_slot("scoring_test")
 
 func _test_audio_and_hud() -> void:
@@ -223,8 +245,8 @@ func _test_audio_and_hud() -> void:
 	rig.manager.pieces[0].is_locked = true
 	rig.manager.piece_changed.emit(0)
 	_check(view.objective_label.text.contains("1/4"), "objective progress updates when a client receives a locked corner snapshot")
-	rig.session.scoring.from_dict({"score": 1350, "charge": 18, "power_charges": 1, "combo_progress": 6})
-	_check(view.score_label.text.contains("1,350") and view.combo_label.text.contains("HOT") and view.combo_label.text.contains("1.5") and view.charge_label.text.contains("18/100") and view.charges.count == 1, "the HUD updates from authoritative scoring state")
+	rig.session.scoring.from_dict({"score": 1350, "charge": 18, "power_charges": 1, "streak": 6})
+	_check(view.score_label.text.contains("1,350") and view.combo_label.text.contains("STREAK 6") and view.combo_label.text.contains(RunScoring.format_multiplier(RunScoring.streak_multiplier(6))) and view.charge_label.text.contains("18/100") and view.charges.count == 1, "the HUD updates from authoritative scoring state")
 	view._on_awarded({"piece_ids": [0, 1, 2, 3, 4, 5], "piece_count": 6, "source": PuzzleManager.ConnectionSource.POWER, "score_gain": 1350, "charge_gain": 18, "charges_gained": 2})
 	_check(view._toasts.size() == 2 and view._toasts[0].text.contains("6 PIECE JOIN") and view._toasts[0].text.contains("+1,350") and view._toasts[1].text.contains("POWER CHARGED! ×2"), "cluster and multi-charge visual feedback is readable")
 	# the objective goes away for good once all four corners are anchored
@@ -237,4 +259,4 @@ func _test_audio_and_hud() -> void:
 	_check(not view.objective_label.visible, "...and does not come back")
 	rig.session.size_index = 1
 	rig.session.start_puzzle(false)
-	_check(rig.session.scoring.score == 0 and rig.session.scoring.charge == 0 and rig.session.scoring.power_charges == 0 and rig.session.scoring.combo_progress == 0 and view.combo_label.text == "NORMAL" and view._toasts.is_empty() and view.objective_label.visible, "a new puzzle resets scoring, HUD, short notices and the objective")
+	_check(rig.session.scoring.score == 0 and rig.session.scoring.charge == 0 and rig.session.scoring.power_charges == 0 and rig.session.scoring.streak == 0 and view.combo_label.text == "NO STREAK" and view._toasts.is_empty() and view.objective_label.visible, "a new puzzle resets scoring, HUD, short notices and the objective")

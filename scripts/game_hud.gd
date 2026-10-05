@@ -14,7 +14,6 @@ const TABLE_TOP := HEIGHT + 30.0 # the table starts below the strip and the obje
 const GOLD := Color(1.0, 0.9, 0.6)
 const TEAL := Color(0.55, 0.94, 0.84)
 const TIER_COLORS := [Color("9fb0ad"), Color("f4d793"), Color("ffac70"), Color("ff746c")]
-const TIER_MULTIPLIERS := ["1", "1.25", "1.5", "2"]
 
 var scoring: RunScoring
 var manager: PuzzleManager
@@ -111,7 +110,7 @@ func _ready() -> void:
 	combo_flame = Flame.new()
 	combo.add_child(combo_flame)
 	combo_label = _label(14, TIER_COLORS[0])
-	combo_label.custom_minimum_size.x = 92
+	combo_label.custom_minimum_size.x = 150
 	combo.add_child(combo_label)
 	row.add_child(combo)
 	var charge := HBoxContainer.new()
@@ -185,7 +184,7 @@ func _refresh() -> void:
 		return
 	score_label.text = "SCORE  %s" % _with_commas(scoring.score)
 	var tier := scoring.tier()
-	combo_label.text = RunScoring.tier_name(tier) if tier == 0 else "%s ×%s" % [RunScoring.tier_name(tier), TIER_MULTIPLIERS[tier]]
+	combo_label.text = "NO STREAK" if scoring.streak == 0 else "STREAK %d  ×%s" % [scoring.streak, RunScoring.format_multiplier(scoring.multiplier())]
 	combo_label.add_theme_color_override("font_color", TIER_COLORS[tier])
 	combo_flame.color = TIER_COLORS[tier]
 	combo_flame.visible = tier > 0
@@ -236,6 +235,8 @@ func _on_awarded(event: Dictionary) -> void:
 	var screen := get_viewport().get_canvas_transform() * centre
 	var count := int(event.piece_count)
 	var title := "%d PIECE JOIN\n" % count if count > 1 else ""
+	if bool(event.get("first_try", false)):
+		title = "FIRST TRY!  STREAK %d  ×%s\n" % [int(event.streak), RunScoring.format_multiplier(float(event.multiplier))] + title
 	var notice := Label.new()
 	notice.text = "%s+%s\n+%d CHARGE" % [title, _with_commas(int(event.score_gain)), int(event.charge_gain)]
 	notice.add_theme_font_size_override("font_size", 19 if count >= 4 else 16)
