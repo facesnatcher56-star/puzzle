@@ -29,10 +29,11 @@ static func texture_for(id: String) -> Texture2D:
 static func sizes_for(id: String) -> Array:
 	return RANDOM_SIZES if id != "" else SIZES
 
-# A random picture other than `current`, so a "new puzzle" is always a visible change.
-static func pick_random(current: String) -> String:
+# A random picture that is not in `excluded`. If every picture is excluded, any picture is allowed rather
+# than leaving the player without a puzzle.
+static func pick_random(excluded: Array) -> String:
 	var ids := RANDOM_IMAGES.keys()
-	var options := ids.filter(func(id): return id != current)
+	var options := ids.filter(func(id): return not excluded.has(id))
 	if options.is_empty():
 		options = ids
 	return options[randi() % options.size()]

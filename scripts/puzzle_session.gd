@@ -63,7 +63,7 @@ func new_session(random_mode: bool) -> void:
 	save_slot = SaveManager.new_slot_id()
 	if random_mode:
 		seed_value = randi_range(1, 1000000)
-		apply_image(PuzzleCatalog.pick_random(image_id))
+		apply_image(pick_random_image())
 	else:
 		apply_image("")
 	start_puzzle(false)
@@ -89,7 +89,7 @@ func start_puzzle(new_seed: bool) -> void:
 		if not network.is_client():
 			save_slot = SaveManager.new_slot_id()
 		if image_id != "":
-			apply_image(PuzzleCatalog.pick_random(image_id))
+			apply_image(pick_random_image())
 	puzzle_resetting.emit()
 	var grid: Vector2i = sizes[size_index]
 	columns = grid.x
@@ -200,6 +200,33 @@ func retire_save_slot() -> void:
 		save_slot = ""
 		needs_new_slot = true
 	save_dirty = false
+
+# --- choosing a random picture ---
+
+# Pictures that are neither finished (in the Collection) nor in progress (a saved game), so Random Puzzle
+# always offers something new.
+static func fresh_random_images() -> Array:
+	var taken := {}
+	for entry in Collection.load_all():
+		taken[str(entry.get("image_id", ""))] = true
+	for entry in active_saves():
+		taken[str(entry.data.get("image_id", ""))] = true
+	return PuzzleCatalog.RANDOM_IMAGES.keys().filter(func(id): return not taken.has(id))
+
+# A random picture for a new puzzle: a fresh one if any are left. Once every picture has been finished or
+# started, pictures that have not been finished are used, and as a last resort any picture except the one
+# on the table, so the game never runs out of puzzles.
+func pick_random_image() -> String:
+	var fresh := fresh_random_images().filter(func(id): return id != image_id) # a new puzzle is always a visible change
+	if not fresh.is_empty():
+		return fresh[randi() % fresh.size()]
+	var finished := {}
+	for entry in Collection.load_all():
+		finished[str(entry.get("image_id", ""))] = true
+	var unfinished := PuzzleCatalog.RANDOM_IMAGES.keys().filter(func(id): return not finished.has(id) and id != image_id)
+	if not unfinished.is_empty():
+		return unfinished[randi() % unfinished.size()]
+	return PuzzleCatalog.pick_random([image_id])
 
 # Saved games still in progress. Any save that turns out to be finished (completed in an older build, or
 # the app was closed right at the end) is moved into the Collection instead of cluttering this list.

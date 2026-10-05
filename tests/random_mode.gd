@@ -29,7 +29,7 @@ func _run() -> void:
 		game.session.start_puzzle(true)
 		_check(game.session.image_id != before, "new puzzle switches image")
 		seen[game.session.image_id] = true
-	_check(seen.size() >= 3, "several different images appear")
+	_check(seen.size() >= 2, "several different images appear") # this puzzle's own picture is saved, so it is not offered again
 	# Saving: every new puzzle gets its own slot, listed newest first, and loads back with its image.
 	for entry in SaveManager.list_saves():
 		SaveManager.delete_slot(entry.slot)
@@ -50,6 +50,37 @@ func _run() -> void:
 	_check(not game.session.load_session("missing_slot"), "loading a missing slot fails cleanly")
 	SaveManager.delete_slot(slot)
 	_check(SaveManager.list_saves().size() == 1, "deleting a slot removes it from the list")
+	# Random Puzzle never offers a finished picture or one that is already in a saved game.
+	Collection.path = "user://test_collection_random.json"
+	Collection.enabled = true
+	for entry in SaveManager.list_saves():
+		SaveManager.delete_slot(entry.slot)
+	for entry in Collection.load_all():
+		Collection.remove(entry.id)
+	_check(PuzzleSession.fresh_random_images().size() == 4, "with nothing finished or saved every picture is available")
+	Collection.add({"id": "done", "image_id": "bayou", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 1, "online": false})
+	game.session.new_session(false)
+	game.session.apply_image("motel")
+	game.session.start_puzzle(false)
+	game.session.write_save() # a saved game in progress on the motel picture
+	var fresh := PuzzleSession.fresh_random_images()
+	fresh.sort()
+	_check(fresh == ["hotel", "subway"], "finished (bayou) and in-progress (motel) pictures are not offered (got %s)" % [fresh])
+	var picked := {}
+	for i in range(60):
+		picked[game.session.pick_random_image()] = true
+	_check(picked.has("hotel") and picked.has("subway") and not picked.has("bayou") and not picked.has("motel"), "random picks only come from the fresh pool")
+	for i in range(10):
+		game.session.start_puzzle(true) # the NEW button in random mode
+		_check(game.session.image_id != "bayou" and game.session.image_id != "motel", "NEW never lands on a finished or in-progress picture")
+	# Everything used up: the game still offers a puzzle (an unfinished one) rather than failing.
+	Collection.add({"id": "done2", "image_id": "hotel", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 2, "online": false})
+	Collection.add({"id": "done3", "image_id": "subway", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 3, "online": false})
+	_check(PuzzleSession.fresh_random_images().is_empty(), "no fresh pictures once all are finished or started")
+	_check(PuzzleCatalog.RANDOM_IMAGES.has(game.session.pick_random_image()), "a puzzle is still offered when every picture is used")
+	for entry in Collection.load_all():
+		Collection.remove(entry.id)
+	Collection.enabled = false
 	var esc := InputEventKey.new()
 	esc.keycode = KEY_ESCAPE
 	esc.pressed = true

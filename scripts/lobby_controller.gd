@@ -282,7 +282,10 @@ func _build_new_game() -> void:
 	_begin_screen(true)
 	_heading("NEW GAME", "Choose a puzzle")
 	_button("Emberbound", "Classic artwork  •  with reference image", func(): _start_new(false))
-	_button("Random Puzzle", "A surprise picture  •  no reference", func(): _start_new(true))
+	var random_detail := "A surprise picture  •  no reference"
+	if PuzzleSession.fresh_random_images().is_empty():
+		random_detail = "Every picture is finished or started  •  pictures may repeat"
+	_button("Random Puzzle", random_detail, func(): _start_new(true))
 	_back_button()
 
 func _start_new(random_mode: bool) -> void:
