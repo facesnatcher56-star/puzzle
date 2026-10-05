@@ -42,6 +42,9 @@ func snap(group_size: int, huge: bool = false) -> void:
 func drop() -> void:
 	_play(_stream("drop", func(): return _render_tap(0.9)), -12.0)
 
+func lock() -> void:
+	_play(_stream("lock", func(): return _render_lock()), 0.0)
+
 func pickup() -> void:
 	_play(_stream("pickup", func(): return _render_tap(0.5)), -18.0)
 
@@ -128,6 +131,15 @@ func _render_snap(kind: String, note: int) -> AudioStreamWAV:
 		for k in range(6):
 			sound += _sparkle(t - 0.25 - k * 0.07, f * 4.0 * (1.0 + k * 0.12), 0.07)
 		return sound)
+
+# A heavy, satisfying "clunk" like a bolt sliding home: deep thump, a metallic ping and a settling chord.
+func _render_lock() -> AudioStreamWAV:
+	return _make(1.3, func(t: float):
+		var boom := sin(TAU * (62.0 + 90.0 * exp(-t * 30.0)) * t) * exp(-t * 7.0) * 0.75
+		var clank := sin(TAU * 2350.0 * t) * exp(-t * 38.0) * 0.28 + sin(TAU * 3510.0 * t) * exp(-t * 52.0) * 0.18
+		var slide := _thock(t - 0.07, 0.9)
+		var settle := _bell(t - 0.1, _freq(-5), 4.0, 0.22) + _bell(t - 0.1, _freq(2), 4.0, 0.16) + _bell(t - 0.16, _freq(7), 4.4, 0.14)
+		return _thock(t, 1.3) + boom + clank + slide + settle)
 
 func _render_complete() -> AudioStreamWAV:
 	var arpeggio := [0, 4, 7, 12, 16, 19, 24]

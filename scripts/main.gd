@@ -58,6 +58,10 @@ var client_join_timer: Timer
 var client_join_piece := -1
 var needs_new_slot := false # a completed puzzle's save slot is retired; the next puzzle gets a fresh one
 var vibration_enabled := true
+var lock_toast: Label
+var known_locked := {}
+var client_lock_timer: Timer
+var client_lock_piece := -1
 var highlight_kind := "" # "EDGES" or "CORNERS" while that bank button is hovered/pressed
 var highlight_timer: Timer
 var hovering_filter_button := false
@@ -135,6 +139,8 @@ func _ready() -> void:
 	manager.bank_changed.connect(func(): bank.refresh())
 	manager.pieces_joined.connect(_on_pieces_joined)
 	manager.puzzle_completed.connect(_on_completed)
+	manager.group_locked.connect(_on_group_locked)
+	manager.group_locked.connect(_mark_dirty.unbind(3))
 	manager.piece_changed.connect(_mark_dirty.unbind(1))
 	manager.pieces_joined.connect(_mark_dirty.unbind(2))
 	manager.puzzle_completed.connect(_mark_dirty)
@@ -144,6 +150,11 @@ func _ready() -> void:
 	fx = BoardFx.new()
 	fx.z_index = 50
 	add_child(fx)
+	client_lock_timer = Timer.new()
+	client_lock_timer.one_shot = true
+	client_lock_timer.wait_time = 0.15
+	client_lock_timer.timeout.connect(_on_client_lock_timeout)
+	add_child(client_lock_timer)
 	client_join_timer = Timer.new()
 	client_join_timer.one_shot = true
 	client_join_timer.wait_time = 0.12
@@ -226,6 +237,8 @@ func _start_puzzle(new_seed: bool) -> void:
 	for child in piece_layer.get_children():
 		piece_layer.remove_child(child) # detach now: a queued-free view would still be hit-tested until the frame ends
 		child.queue_free()
+	known_locked.clear()
+	known_cluster.clear()
 	table_views.clear()
 	selected_table_id = -1
 	dragging_table_id = -1
@@ -369,6 +382,22 @@ func _build_ui() -> void:
 	next.text = "New puzzle"
 	next.pressed.connect(func(): _start_puzzle(true))
 	complete_row.add_child(next)
+	lock_toast = Label.new()
+	lock_toast.visible = false
+	lock_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lock_toast.anchor_left = 0.5
+	lock_toast.anchor_right = 0.5
+	lock_toast.offset_left = -260
+	lock_toast.offset_right = 260
+	lock_toast.offset_top = 66
+	lock_toast.offset_bottom = 100
+	lock_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lock_toast.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lock_toast.add_theme_font_size_override("font_size", 18)
+	lock_toast.add_theme_color_override("font_color", Color("ffe3a0"))
+	lock_toast.add_theme_color_override("font_outline_color", Color(0.05, 0.08, 0.1, 0.9))
+	lock_toast.add_theme_constant_override("outline_size", 8)
+	ui_root.add_child(lock_toast)
 	_build_reference()
 
 # The reference window is a non-modal floating panel: laid out manually (not via
@@ -1560,8 +1589,10 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 		dragging_table_id = picked
 		drag_offset = world - manager.get_piece(picked).current_position
 		_bring_cluster_forward(picked)
-	elif picked < 0:
-		mouse_panning = true # left-dragging empty table moves the camera
+	elif picked < 0 or manager.is_locked(picked):
+		mouse_panning = true # left-dragging empty table (or the locked board) moves the camera
+		if picked >= 0:
+			_select_table_piece(-1)
 
 func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if reference_dragging:
@@ -1789,7 +1820,7 @@ func _nudge_clear_of_covered(piece_id: int) -> void:
 	var total := Vector2.ZERO
 	for key in manager.clusters.keys():
 		var members: Array = manager.clusters[key]
-		if piece.cluster_id == key or members.size() != my_size:
+		if piece.cluster_id == key or members.size() != my_size or manager.is_locked(members[0]):
 			continue
 		var other := _cluster_rect(members[0])
 		var other_area := other.get_area()
@@ -1815,8 +1846,11 @@ func _restack_pieces() -> void:
 	for i in range(children.size()):
 		var view := children[i] as PuzzlePieceView
 		if view != null:
-			entries.append({"view": view, "size": manager.cluster_members(view.data.piece_id).size(), "index": i})
-	entries.sort_custom(func(a, b): return a.size > b.size or (a.size == b.size and a.index < b.index))
+			entries.append({"view": view, "size": manager.cluster_members(view.data.piece_id).size(), "index": i, "locked": manager.is_locked(view.data.piece_id)})
+	entries.sort_custom(func(a, b):
+		if a.locked != b.locked:
+			return a.locked
+		return a.size > b.size or (a.size == b.size and a.index < b.index))
 	for i in range(entries.size()):
 		piece_layer.move_child(entries[i].view, i)
 
@@ -1834,7 +1868,9 @@ func _on_piece_changed(piece_id: int) -> void:
 		table_views[piece_id] = new_view
 	table_views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
 	table_views[piece_id].refresh_seams()
+	table_views[piece_id].set_locked(piece.is_locked)
 	_detect_client_join(piece_id)
+	_detect_client_lock(piece_id)
 	if highlight_kind != "":
 		_refresh_type_highlight()
 	# Keep the hover popup in step with a piece that was just turned (by this player or a remote one).
@@ -1897,6 +1933,70 @@ func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
 	if level >= 2:
 		_shake_camera([0.0, 0.0, 3.0, 6.0][level], 0.28)
 
+# --- Locking feedback ---
+
+func _on_group_locked(_cluster_id: int, member_ids: Array, side_names: Array) -> void:
+	if restoring:
+		return
+	_celebrate_lock(member_ids, side_names)
+
+# The group has just been bolted to the board: a clunk, a gold ring from its middle, a short shake,
+# and a banner naming the edge that locked in.
+func _celebrate_lock(member_ids: Array, side_names: Array) -> void:
+	sfx.lock()
+	if vibration_enabled and OS.has_feature("mobile"):
+		Input.vibrate_handheld(120)
+	var centre := Vector2.ZERO
+	for member_id in member_ids:
+		var member: PuzzlePieceState = manager.pieces[member_id]
+		centre += member.current_position + member.piece_size * 0.5
+	centre /= maxf(1.0, member_ids.size())
+	if side_names.is_empty():
+		_show_lock_toast("LOCKED TO THE BOARD")
+	else:
+		_show_lock_toast("%s EDGE LOCKED TO THE BOARD" % " & ".join(side_names))
+	if not fx_enabled:
+		return
+	fx.ring(centre, 260.0, Color(1.0, 0.82, 0.4, 0.95), 0.6, 9.0)
+	fx.sparkles(centre, 26, Color(1.0, 0.88, 0.5, 1.0), 300.0)
+	for member_id in member_ids:
+		if table_views.has(member_id):
+			var view: PuzzlePieceView = table_views[member_id]
+			var member: PuzzlePieceState = manager.pieces[member_id]
+			var distance := (member.current_position + member.piece_size * 0.5).distance_to(centre)
+			view.pulse(0.045, clampf(distance / 3200.0, 0.0, 0.4))
+			view.modulate = Color(1.3, 1.18, 0.85)
+			create_tween().tween_property(view, "modulate", Color.WHITE, 0.45)
+	_shake_camera(3.0, 0.2)
+
+func _show_lock_toast(text: String) -> void:
+	if lock_toast == null:
+		return
+	lock_toast.text = text
+	lock_toast.visible = true
+	lock_toast.modulate.a = 0.0
+	var tween := create_tween()
+	tween.tween_property(lock_toast, "modulate:a", 1.0, 0.18)
+	tween.tween_interval(1.9)
+	tween.tween_property(lock_toast, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(func(): lock_toast.visible = false)
+
+# Clients do not run the locking code; they see pieces become locked in the host's updates.
+func _detect_client_lock(piece_id: int) -> void:
+	var piece := manager.get_piece(piece_id)
+	var now_locked := piece != null and piece.is_locked
+	if now_locked and not bool(known_locked.get(piece_id, false)) and not restoring and network.is_client():
+		client_lock_piece = piece_id
+		client_lock_timer.start()
+	known_locked[piece_id] = now_locked
+
+func _on_client_lock_timeout() -> void:
+	if client_lock_piece < 0 or not network.is_client():
+		return
+	var members := manager.cluster_members(client_lock_piece)
+	if not members.is_empty():
+		_celebrate_lock(members, manager.complete_sides(members))
+
 func _shake_camera(strength: float, duration: float) -> void:
 	var tween := create_tween()
 	tween.tween_method(func(t: float): camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * strength * (1.0 - t), 0.0, 1.0, duration)
@@ -1940,6 +2040,8 @@ func _spread_table_pieces() -> void:
 	for group_id in group_ids:
 		var members: Array = manager.clusters[group_id]
 		var first: PuzzlePieceState = manager.pieces[members[0]]
+		if first.is_locked:
+			continue
 		var bounds := Rect2(first.current_position + first.piece_size * 0.5, Vector2.ZERO)
 		for member_id in members:
 			var member: PuzzlePieceState = manager.pieces[member_id]

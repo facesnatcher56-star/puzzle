@@ -5,6 +5,7 @@ signal piece_changed(piece_id: int)
 signal bank_changed
 signal pieces_joined(cluster_id: int, member_ids: Array)
 signal puzzle_completed
+signal group_locked(cluster_id: int, member_ids: Array, side_names: Array)
 
 var pieces: Array[PuzzlePieceState] = []
 var cell_size := Vector2.ONE
@@ -66,7 +67,7 @@ func request_pickup(piece_id: int, player_id: int = 0) -> bool:
 	var members := cluster_members(piece_id)
 	for member_id in members:
 		var owner: int = pieces[member_id].owner_peer_id
-		if owner != 0 and owner != player_id:
+		if pieces[member_id].is_locked or (owner != 0 and owner != player_id):
 			return false
 	for member_id in members:
 		pieces[member_id].owner_peer_id = player_id
@@ -80,9 +81,15 @@ func is_free_for(piece_id: int, player_id: int) -> bool:
 			return false
 	return true
 
+func is_locked(piece_id: int) -> bool:
+	var piece := get_piece(piece_id)
+	return piece != null and piece.is_locked
+
 func request_move(piece_id: int, position: Vector2) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table:
+		return false
+	if piece.is_locked:
 		return false
 	var delta := position - piece.current_position
 	for member_id in cluster_members(piece_id):
@@ -92,7 +99,7 @@ func request_move(piece_id: int, position: Vector2) -> bool:
 
 func request_rotate(piece_id: int) -> bool:
 	var piece := get_piece(piece_id)
-	if piece == null or not piece.is_on_table:
+	if piece == null or not piece.is_on_table or piece.is_locked:
 		return false
 	var members := cluster_members(piece_id)
 	var pivot := Vector2.ZERO
@@ -183,10 +190,82 @@ func snap_piece(piece_id: int) -> bool:
 		moving_cluster = new_id
 		joined_any = true
 		pieces_joined.emit(new_id, merged.duplicate())
+	_try_lock(moving_cluster)
 	if not completion_announced and pieces.size() > 0 and table_count() == pieces.size() and clusters.size() == 1:
 		completion_announced = true
 		puzzle_completed.emit()
 	return joined_any
+
+# --- Locking to the board ---
+# A group locks once it holds one whole side of the border (corner to corner), sits upright on the board
+# at its true place, and from then on every piece that joins it is locked too and can never be moved.
+
+# Names of the border sides this group fully contains ("TOP", "BOTTOM", "LEFT", "RIGHT").
+func complete_sides(member_ids: Array) -> Array:
+	var have := {}
+	for id in member_ids:
+		have[id] = true
+	var sides := []
+	var top := true
+	var bottom := true
+	for c in range(columns):
+		top = top and have.has(c)
+		bottom = bottom and have.has((rows - 1) * columns + c)
+	var left := true
+	var right := true
+	for r in range(rows):
+		left = left and have.has(r * columns)
+		right = right and have.has(r * columns + columns - 1)
+	if top:
+		sides.append("TOP")
+	if bottom:
+		sides.append("BOTTOM")
+	if left:
+		sides.append("LEFT")
+	if right:
+		sides.append("RIGHT")
+	return sides
+
+func _try_lock(cluster_id: int) -> void:
+	if not clusters.has(cluster_id):
+		return
+	var members: Array = clusters[cluster_id]
+	var already := false
+	for id in members:
+		already = already or pieces[id].is_locked
+	var sides := []
+	if not already:
+		sides = complete_sides(members)
+		if sides.is_empty():
+			return
+		var anchor: PuzzlePieceState = pieces[members[0]]
+		var tolerance := minf(cell_size.x, cell_size.y) * 0.45
+		for id in members:
+			if pieces[id].current_rotation != 0:
+				return
+		if (anchor.current_position - anchor.correct_position).length() > tolerance:
+			return
+	var newly_locked := []
+	for id in members:
+		var member: PuzzlePieceState = pieces[id]
+		if not member.is_locked:
+			newly_locked.append(id)
+		member.is_locked = true
+		member.current_position = member.correct_position
+		member.current_rotation = 0
+		member.owner_peer_id = 0
+		member.is_snapped = true
+	for id in members:
+		piece_changed.emit(id)
+	if not newly_locked.is_empty():
+		group_locked.emit(cluster_id, members.duplicate(), sides)
+
+func locked_count() -> int:
+	var count := 0
+	for piece in pieces:
+		if piece.is_locked:
+			count += 1
+	return count
 
 func _edges_touch(a: PuzzlePieceState, side: int, b: PuzzlePieceState) -> bool:
 	var a_edge := _world_edge(a, side)
@@ -261,6 +340,15 @@ func apply_snapshots(snapshots: Array) -> void:
 # joins were computed slightly wrong), which showed up as gaps and mismatched seams inside a group.
 func realign_clusters() -> void:
 	for members in clusters.values():
+		var any_locked := false
+		for id in members:
+			any_locked = any_locked or pieces[id].is_locked
+		if any_locked:
+			for id in members:
+				pieces[id].is_locked = true
+				pieces[id].current_position = pieces[id].correct_position
+				pieces[id].current_rotation = 0
+			continue
 		if members.size() < 2:
 			continue
 		var anchor: PuzzlePieceState = pieces[members[0]]

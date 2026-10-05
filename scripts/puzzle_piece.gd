@@ -24,6 +24,7 @@ var soft_shadow: Polygon2D
 var art: Polygon2D
 var edges: PieceEdges
 var joined_mask := 0
+var locked := false
 
 func setup(piece: PuzzlePieceState, source: Texture2D, size: Vector2) -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
@@ -110,6 +111,14 @@ func pulse(amount: float, delay: float = 0.0) -> void:
 		body.scale = Vector2.ONE
 		body.position = Vector2.ZERO)
 
+# Locked pieces are fixed to the board; a faint gold edge on the outside of the locked section marks it.
+func set_locked(value: bool) -> void:
+	if locked == value:
+		return
+	locked = value
+	if edges:
+		edges.set_locked(value)
+
 func set_selected(value: bool) -> void:
 	selected = value
 	if edges:
@@ -147,7 +156,12 @@ class PieceEdges extends Node2D:
 	var outward_sign := 1.0
 	var selected := false
 	var flagged := false
+	var locked := false
 	var pulse := 0.0
+
+	func set_locked(value: bool) -> void:
+		locked = value
+		queue_redraw()
 
 	func set_flagged(value: bool) -> void:
 		if flagged == value:
@@ -258,6 +272,9 @@ class PieceEdges extends Node2D:
 			colors.append(Color(1, 1, 1, shade * 0.5) if shade > 0.0 else Color(0, 0, 0, -shade * 0.42))
 		if not segments.is_empty():
 			draw_multiline_colors(segments, colors, 2.4)
+		if locked:
+			for run in runs:
+				draw_polyline(run, Color(1.0, 0.82, 0.4, 0.5), 2.6, true)
 		if selected:
 			for run in runs:
 				draw_polyline(run, HIGHLIGHT_COLOR, 4.0, true)
