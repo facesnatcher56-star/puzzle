@@ -58,7 +58,6 @@ var client_join_timer: Timer
 var client_join_piece := -1
 var needs_new_slot := false # a completed puzzle's save slot is retired; the next puzzle gets a fresh one
 var vibration_enabled := true
-var lock_toast: Label
 var known_locked := {}
 var client_lock_timer: Timer
 var client_lock_piece := -1
@@ -382,22 +381,6 @@ func _build_ui() -> void:
 	next.text = "New puzzle"
 	next.pressed.connect(func(): _start_puzzle(true))
 	complete_row.add_child(next)
-	lock_toast = Label.new()
-	lock_toast.visible = false
-	lock_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lock_toast.anchor_left = 0.5
-	lock_toast.anchor_right = 0.5
-	lock_toast.offset_left = -260
-	lock_toast.offset_right = 260
-	lock_toast.offset_top = 66
-	lock_toast.offset_bottom = 100
-	lock_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lock_toast.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lock_toast.add_theme_font_size_override("font_size", 18)
-	lock_toast.add_theme_color_override("font_color", Color("ffe3a0"))
-	lock_toast.add_theme_color_override("font_outline_color", Color(0.05, 0.08, 0.1, 0.9))
-	lock_toast.add_theme_constant_override("outline_size", 8)
-	ui_root.add_child(lock_toast)
 	_build_reference()
 
 # The reference window is a non-modal floating panel: laid out manually (not via
@@ -1935,14 +1918,13 @@ func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
 
 # --- Locking feedback ---
 
-func _on_group_locked(_cluster_id: int, member_ids: Array, side_names: Array) -> void:
+func _on_group_locked(_cluster_id: int, member_ids: Array, _side_names: Array) -> void:
 	if restoring:
 		return
-	_celebrate_lock(member_ids, side_names)
+	_celebrate_lock(member_ids)
 
-# The group has just been bolted to the board: a clunk, a gold ring from its middle, a short shake,
-# and a banner naming the edge that locked in.
-func _celebrate_lock(member_ids: Array, side_names: Array) -> void:
+# The group has just been bolted to the board: a clunk, a gold ring from its middle and a short shake.
+func _celebrate_lock(member_ids: Array) -> void:
 	sfx.lock()
 	if vibration_enabled and OS.has_feature("mobile"):
 		Input.vibrate_handheld(120)
@@ -1951,10 +1933,6 @@ func _celebrate_lock(member_ids: Array, side_names: Array) -> void:
 		var member: PuzzlePieceState = manager.pieces[member_id]
 		centre += member.current_position + member.piece_size * 0.5
 	centre /= maxf(1.0, member_ids.size())
-	if side_names.is_empty():
-		_show_lock_toast("LOCKED TO THE BOARD")
-	else:
-		_show_lock_toast("%s EDGE LOCKED TO THE BOARD" % " & ".join(side_names))
 	if not fx_enabled:
 		return
 	fx.ring(centre, 260.0, Color(1.0, 0.82, 0.4, 0.95), 0.6, 9.0)
@@ -1968,18 +1946,6 @@ func _celebrate_lock(member_ids: Array, side_names: Array) -> void:
 			view.modulate = Color(1.3, 1.18, 0.85)
 			create_tween().tween_property(view, "modulate", Color.WHITE, 0.45)
 	_shake_camera(3.0, 0.2)
-
-func _show_lock_toast(text: String) -> void:
-	if lock_toast == null:
-		return
-	lock_toast.text = text
-	lock_toast.visible = true
-	lock_toast.modulate.a = 0.0
-	var tween := create_tween()
-	tween.tween_property(lock_toast, "modulate:a", 1.0, 0.18)
-	tween.tween_interval(1.9)
-	tween.tween_property(lock_toast, "modulate:a", 0.0, 0.5)
-	tween.tween_callback(func(): lock_toast.visible = false)
 
 # Clients do not run the locking code; they see pieces become locked in the host's updates.
 func _detect_client_lock(piece_id: int) -> void:
@@ -1995,7 +1961,7 @@ func _on_client_lock_timeout() -> void:
 		return
 	var members := manager.cluster_members(client_lock_piece)
 	if not members.is_empty():
-		_celebrate_lock(members, manager.complete_sides(members))
+		_celebrate_lock(members)
 
 func _shake_camera(strength: float, duration: float) -> void:
 	var tween := create_tween()
