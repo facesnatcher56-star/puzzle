@@ -57,25 +57,27 @@ func _run() -> void:
 		SaveManager.delete_slot(entry.slot)
 	for entry in Collection.load_all():
 		Collection.remove(entry.id)
-	_check(PuzzleSession.fresh_random_images().size() == 4, "with nothing finished or saved every picture is available")
+	_check(PuzzleSession.fresh_random_images().size() == PuzzleCatalog.RANDOM_IMAGES.size(), "with nothing finished or saved every picture is available")
 	Collection.add({"id": "done", "image_id": "bayou", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 1, "online": false})
 	game.session.new_session(false)
 	game.session.apply_image("motel")
 	game.session.start_puzzle(false)
 	game.session.write_save() # a saved game in progress on the motel picture
 	var fresh := PuzzleSession.fresh_random_images()
-	fresh.sort()
-	_check(fresh == ["hotel", "subway"], "finished (bayou) and in-progress (motel) pictures are not offered (got %s)" % [fresh])
+	_check(not fresh.has("bayou") and not fresh.has("motel") and fresh.size() == PuzzleCatalog.RANDOM_IMAGES.size() - 2, "finished (bayou) and in-progress (motel) pictures are not offered (got %s)" % [fresh])
 	var picked := {}
 	for i in range(60):
 		picked[game.session.pick_random_image()] = true
-	_check(picked.has("hotel") and picked.has("subway") and not picked.has("bayou") and not picked.has("motel"), "random picks only come from the fresh pool")
+	_check(picked.size() >= 2 and not picked.has("bayou") and not picked.has("motel"), "random picks only come from the fresh pool")
 	for i in range(10):
 		game.session.start_puzzle(true) # the NEW button in random mode
 		_check(game.session.image_id != "bayou" and game.session.image_id != "motel", "NEW never lands on a finished or in-progress picture")
 	# Everything used up: the game still offers a puzzle (an unfinished one) rather than failing.
-	Collection.add({"id": "done2", "image_id": "hotel", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 2, "online": false})
-	Collection.add({"id": "done3", "image_id": "subway", "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": 3, "online": false})
+	var finish_index := 2
+	for id in PuzzleCatalog.RANDOM_IMAGES.keys():
+		if id != "bayou" and id != "motel":
+			Collection.add({"id": "done%d" % finish_index, "image_id": id, "pieces": 24, "columns": 6, "rows": 4, "time_ms": 1000, "completed_at": finish_index, "online": false})
+			finish_index += 1
 	_check(PuzzleSession.fresh_random_images().is_empty(), "no fresh pictures once all are finished or started")
 	_check(PuzzleCatalog.RANDOM_IMAGES.has(game.session.pick_random_image()), "a puzzle is still offered when every picture is used")
 	for entry in Collection.load_all():

@@ -23,6 +23,7 @@ func _run() -> void:
 	await process_frame
 	game.lobby.hide_menu()
 	game.session.new_session(true)
+	game.session.apply_image("motel") # a picture that offers the small 24-piece size
 	game.session.size_index = 0
 	game.session.start_puzzle(false)
 	game.session.random_rotation = false

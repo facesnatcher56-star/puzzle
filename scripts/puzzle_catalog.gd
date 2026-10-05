@@ -16,7 +16,16 @@ const RANDOM_IMAGES := {
 	"hotel": preload("res://assets/random/hotel.webp"),
 	"subway": preload("res://assets/random/subway.webp"),
 	"bayou": preload("res://assets/random/bayou.webp"),
+	"greenhouse": preload("res://assets/random/greenhouse.webp"),
+	"toyworks": preload("res://assets/random/toyworks.webp"),
+	"lighthouse": preload("res://assets/random/lighthouse.webp"),
 }
+# Names where capitalising the id is not enough.
+const RANDOM_NAMES := {"toyworks": "Toy Works"}
+# The detailed pictures are offered only at 252 and 500 pieces: fewer, smaller pieces would lose what makes them
+# worth doing. (Cells stay close to square: about 80 x 78 and 58 x 54 pixels.)
+const LARGE_ONLY := ["greenhouse", "toyworks", "lighthouse"]
+const LARGE_SIZES := [Vector2i(18, 14), Vector2i(25, 20)]
 # Grids for the 4:3 random artwork; chosen so cells stay close to square.
 const RANDOM_SIZES := [Vector2i(6, 4), Vector2i(8, 6), Vector2i(12, 9), Vector2i(18, 14)]
 
@@ -46,7 +55,7 @@ static func label_for(id: String, seed_value: int = 0) -> String:
 		return "Emberbound"
 	if is_generated(id):
 		return "Generated  •  " + ProceduralImage.theme_name(ProceduralImage.resolve(generated_theme(id), seed_value))
-	return "Random  •  " + id.capitalize()
+	return "Random  •  " + str(RANDOM_NAMES.get(id, id.capitalize()))
 
 static func is_random(id: String) -> bool:
 	return id != ""
@@ -73,7 +82,13 @@ static func _generated_texture(id: String, seed_value: int, size: Vector2i) -> T
 	return _generated_cache[key]
 
 static func sizes_for(id: String) -> Array:
+	if LARGE_ONLY.has(id):
+		return LARGE_SIZES
 	return RANDOM_SIZES if id != "" else SIZES
+
+# Which entry of sizes_for(id) a new puzzle starts on: the largest, except the detailed pictures start at 252.
+static func default_size_index(id: String) -> int:
+	return 0 if LARGE_ONLY.has(id) else sizes_for(id).size() - 1
 
 # A random picture that is not in `excluded`. If every picture is excluded, any picture is allowed rather
 # than leaving the player without a puzzle.

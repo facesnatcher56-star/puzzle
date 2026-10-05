@@ -171,7 +171,7 @@ func apply_image(id: String) -> void:
 	source = PuzzleCatalog.texture_for(id, seed_value)
 	board_size = source.get_size()
 	sizes = PuzzleCatalog.sizes_for(id)
-	size_index = sizes.size() - 1
+	size_index = PuzzleCatalog.default_size_index(id)
 	image_changed.emit(id)
 
 # --- configuration shared with saves and the network ---

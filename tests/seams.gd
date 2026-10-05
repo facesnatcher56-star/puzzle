@@ -58,6 +58,9 @@ func _configs() -> Array:
 		all.append({"name": "classic", "board": Vector2(1122, 1402), "grid": grid})
 	for grid in PuzzleCatalog.RANDOM_SIZES:
 		all.append({"name": "random", "board": Vector2(1448, 1086), "grid": grid})
+	for grid in PuzzleCatalog.LARGE_SIZES:
+		if not PuzzleCatalog.RANDOM_SIZES.has(grid):
+			all.append({"name": "large", "board": Vector2(1448, 1086), "grid": grid})
 	return all
 
 func _run() -> void:
