@@ -71,12 +71,24 @@ func on_pieces_joined(_cluster_id: int, member_ids: Array) -> void:
 	_join_happened = true
 	if session.restoring:
 		return
+	# A client can see its own predicted join through both this signal and the
+	# piece-change fallback. Keep the fallback for joins made by other players.
+	if network.is_client() and _client_join_timer != null and member_ids.has(_client_join_piece):
+		_client_join_timer.stop()
 	var origin := Vector2.ZERO
 	if _drop_piece_id >= 0 and Time.get_ticks_msec() - _drop_msec < 600 and _drop_piece_id < manager.pieces.size():
 		origin = _piece_centre(manager.pieces[_drop_piece_id])
 	else:
 		origin = _centre_of(member_ids)
 	_celebrate_join(member_ids, origin)
+	# Scoring supplies one authoritative sound for both loose and anchored joins.
+
+func on_scoring_awarded(event: Dictionary) -> void:
+	_join_happened = true
+	sfx.reward_snap(int(event.combo_after), int(event.piece_count), int(event.source) == PuzzleManager.ConnectionSource.POWER)
+
+func on_scoring_tier_rose(_tier: int) -> void:
+	sfx.combo_up()
 
 func on_group_locked(_cluster_id: int, member_ids: Array, _side_names: Array) -> void:
 	if session.restoring:
@@ -129,7 +141,6 @@ func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
 		level = 2
 	if size >= maxi(50, total / 2):
 		level = 3
-	sfx.snap(size, level == 3)
 	_vibrate([25, 45, 80, 140][level])
 	if not fx_enabled:
 		return
@@ -154,7 +165,6 @@ func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
 
 # The group has just been bolted to the board: a clunk, a gold ring from its middle and a short shake.
 func _celebrate_lock(member_ids: Array) -> void:
-	sfx.lock()
 	_vibrate(120)
 	if not fx_enabled:
 		return

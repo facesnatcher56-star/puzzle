@@ -55,6 +55,7 @@ func _run() -> void:
 	game.session.size_index = 1
 	game.session.random_rotation = false
 	game.session.start_puzzle(false)
+	_check(game.network.is_solo() and game.network.local_player_id() == 0, "solo input uses the manager's local player ID without a multiplayer peer")
 	await process_frame
 	await process_frame
 	var bank_item: PieceBankItem = game.bank.row.get_child(0)
@@ -180,6 +181,18 @@ func _run() -> void:
 	var group_delta: Vector2 = game.manager.pieces[0].current_position - group_before
 	var member_delta: Vector2 = game.manager.pieces[1].current_position - member_before
 	_check(group_delta.length() > 30 and group_delta.distance_to(member_delta) < 0.01, "dragging a joined piece moves both views together")
+	var held_grab: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[1].current_position + game.manager.pieces[1].piece_size * 0.5)
+	_mouse_button(held_grab, true)
+	var held_id: int = game.input_controller.dragging_table_id
+	var held_rotation: int = game.manager.pieces[held_id].current_rotation
+	var right_click := held_grab + Vector2(160, 30) # away from the member being held
+	_mouse_button(right_click, true, MOUSE_BUTTON_RIGHT)
+	_mouse_button(right_click, false, MOUSE_BUTTON_RIGHT)
+	_check(game.input_controller.dragging_table_id == held_id and game.manager.pieces[0].current_rotation == (held_rotation + 90) % 360 and game.manager.pieces[1].current_rotation == (held_rotation + 90) % 360, "right-click rotates the held cluster without dropping it")
+	var held_position: Vector2 = game.manager.pieces[held_id].current_position
+	_mouse_motion(right_click + Vector2(30, 20), Vector2(30, 20))
+	_check(game.manager.pieces[held_id].current_position.distance_to(held_position) > 20, "the rotated cluster still follows the left-button drag")
+	_mouse_button(right_click + Vector2(30, 20), false)
 	var touch_group_before: Vector2 = game.manager.pieces[0].current_position
 	var touch_member_before: Vector2 = game.manager.pieces[1].current_position
 	var touch_group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (touch_group_before + game.manager.pieces[0].piece_size * 0.5)

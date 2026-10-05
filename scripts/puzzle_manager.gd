@@ -6,6 +6,11 @@ signal bank_changed
 signal pieces_joined(cluster_id: int, member_ids: Array)
 signal puzzle_completed
 signal group_locked(cluster_id: int, member_ids: Array, side_names: Array)
+signal main_puzzle_connected(piece_ids: Array, source: int)
+signal loose_puzzle_connected(piece_count: int, member_ids: Array, source: int)
+signal failed_connection_attempt
+
+enum ConnectionSource { MANUAL, POWER }
 
 var pieces: Array[PuzzlePieceState] = []
 var cell_size := Vector2.ONE
@@ -101,7 +106,11 @@ func request_rotate(piece_id: int) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table or piece.is_locked:
 		return false
-	var members := cluster_members(piece_id)
+	_rotate_group(cluster_members(piece_id))
+	return true
+
+# Turns a joined group a quarter turn clockwise about its own middle.
+func _rotate_group(members: Array) -> void:
 	var pivot := Vector2.ZERO
 	for member_id in members:
 		var member: PuzzlePieceState = pieces[member_id]
@@ -113,15 +122,19 @@ func request_rotate(piece_id: int) -> bool:
 		member.current_position = pivot + (center - pivot).rotated(PI * 0.5) - member.piece_size * 0.5
 		member.current_rotation = (member.current_rotation + 90) % 360
 		piece_changed.emit(member_id)
-	return true
 
-func request_release(piece_id: int, player_id: int = 0) -> bool:
+func request_release(piece_id: int, player_id: int = 0, count_failed_attempt: bool = true) -> bool:
 	var piece := get_piece(piece_id)
-	if piece == null or not piece.is_on_table or piece.owner_peer_id != player_id:
+	if piece == null or not piece.is_on_table or piece.is_locked or piece.owner_peer_id != player_id:
 		return false
+	var clear_attempt := count_failed_attempt and _near_join_target(piece_id)
+	var locked_before := locked_count()
 	for member_id in cluster_members(piece_id):
 		pieces[member_id].owner_peer_id = 0
-	return snap_piece(piece_id)
+	var joined := snap_piece(piece_id)
+	if not joined and locked_count() == locked_before and clear_attempt:
+		failed_connection_attempt.emit()
+	return joined
 
 # Used when a networked peer disconnects mid-drag so their held pieces don't stay locked forever.
 func release_pieces_owned_by(player_id: int) -> void:
@@ -132,17 +145,18 @@ func release_pieces_owned_by(player_id: int) -> void:
 		if piece.owner_peer_id == player_id:
 			held.append(piece.piece_id)
 	for piece_id in held:
-		request_release(piece_id, player_id)
+		request_release(piece_id, player_id, false)
 
 # A joint requires correct neighboring IDs, complementary edges, equal rotation,
 # and almost coincident edge contours. The board's world position is irrelevant.
-func snap_piece(piece_id: int) -> bool:
+func snap_piece(piece_id: int, source: int = ConnectionSource.MANUAL) -> bool:
 	var piece := get_piece(piece_id)
 	if piece == null or not piece.is_on_table:
 		return false
 	var joined_any := false
+	var loose_join_count := 0
 	var moving_cluster: int = piece.cluster_id
-	var contact_tolerance := minf(cell_size.x, cell_size.y) * 0.15
+	var contact_tolerance := minf(cell_size.x, cell_size.y) * 0.20
 	while true:
 		var best_target := -1
 		var best_offset := Vector2.ZERO
@@ -175,6 +189,8 @@ func snap_piece(piece_id: int) -> bool:
 		for member_id in moved_members:
 			pieces[member_id].current_position += best_offset
 		var other_members: Array = clusters[best_target]
+		if not pieces[moved_members[0]].is_locked and not pieces[other_members[0]].is_locked:
+			loose_join_count += mini(moved_members.size(), other_members.size())
 		var merged: Array = moved_members.duplicate()
 		merged.append_array(other_members)
 		merged.sort()
@@ -190,15 +206,48 @@ func snap_piece(piece_id: int) -> bool:
 		moving_cluster = new_id
 		joined_any = true
 		pieces_joined.emit(new_id, merged.duplicate())
-	_try_lock(moving_cluster)
+	var locked_before := locked_count()
+	_try_lock(moving_cluster, source)
+	if loose_join_count > 0 and locked_count() == locked_before:
+		loose_puzzle_connected.emit(loose_join_count, clusters[moving_cluster].duplicate(), source)
 	if not completion_announced and pieces.size() > 0 and table_count() == pieces.size() and clusters.size() == 1:
 		completion_announced = true
 		puzzle_completed.emit()
 	return joined_any
 
 # --- Locking to the board ---
-# A group locks once it holds one whole side of the border (corner to corner), sits upright on the board
-# at its true place, and from then on every piece that joins it is locked too and can never be moved.
+# A correctly placed corner anchors its cluster immediately. Any group that later joins
+# a locked anchor becomes part of the immovable main puzzle.
+
+func corner_ids() -> Array:
+	if columns < 2 or rows < 2:
+		return []
+	return [0, columns - 1, (rows - 1) * columns, rows * columns - 1]
+
+func anchored_corner_count() -> int:
+	var count := 0
+	for id in corner_ids():
+		if pieces[id].is_locked:
+			count += 1
+	return count
+
+func edge_pulse_targets(limit: int = 6) -> Array:
+	var immediate := []
+	var remaining := []
+	for piece in pieces:
+		if not piece.is_edge_piece or piece.is_corner_piece or piece.is_locked or _group_is_held(piece):
+			continue
+		var useful := false
+		for side in range(4):
+			var neighbor_id := _correct_neighbor(piece, side)
+			if neighbor_id >= 0 and pieces[neighbor_id].is_locked:
+				useful = true
+				break
+		if useful:
+			immediate.append(piece.piece_id)
+		else:
+			remaining.append(piece.piece_id)
+	return (immediate + remaining).slice(0, maxi(0, limit))
 
 # Names of the border sides this group fully contains ("TOP", "BOTTOM", "LEFT", "RIGHT").
 func complete_sides(member_ids: Array) -> Array:
@@ -226,7 +275,104 @@ func complete_sides(member_ids: Array) -> Array:
 		sides.append("RIGHT")
 	return sides
 
-func _try_lock(cluster_id: int) -> void:
+# --- Lightning ---
+# The "main puzzle" is every locked piece: the sections bolted to the board, which is where a group ends up
+# once it holds a whole side of the border and everything that has joined it since.
+
+func is_in_main_puzzle(piece_id: int) -> bool:
+	return is_locked(piece_id)
+
+# The pieces lightning may strike: not yet part of the main puzzle, not held by a player, and belonging to a
+# group (a loose piece is a group of one, in the bank or on the table) that has a member sitting right
+# beside the main puzzle -- so wherever it lands, it joins. Struck groups are never torn apart: any piece of
+# a group is as good a target as another, so a big group is proportionally more likely to be hit.
+func lightning_targets() -> Array:
+	var wanted := {} # group key -> true
+	for piece in pieces:
+		if not piece.is_locked:
+			continue
+		for side in range(4):
+			var neighbor_id := _correct_neighbor(piece, side)
+			if neighbor_id >= 0 and not pieces[neighbor_id].is_locked:
+				wanted[_group_key(pieces[neighbor_id])] = true
+	var targets := []
+	for piece in pieces:
+		if piece.is_locked or not wanted.has(_group_key(piece)):
+			continue
+		if _group_is_held(piece):
+			continue
+		targets.append(piece.piece_id)
+	return targets
+
+# Moves the group containing `piece_id` (or the lone piece, fetched from the bank if need be) so that this
+# piece sits exactly where it belongs and upright, keeping every join inside the group, then joins it to the
+# main puzzle. Returns the ids of the pieces that were moved (empty if the piece is already in the main puzzle).
+func strike_piece(piece_id: int) -> Array:
+	var piece := get_piece(piece_id)
+	if piece == null or piece.is_locked:
+		return []
+	var from_bank := not piece.is_on_table
+	var moved: Array
+	if from_bank:
+		piece.is_on_table = true
+		piece.cluster_id = piece_id
+		piece.current_rotation = 0
+		clusters[piece_id] = [piece_id]
+		moved = [piece_id]
+	else:
+		moved = cluster_members(piece_id).duplicate()
+		while piece.current_rotation != 0:
+			_rotate_group(moved)
+	# A group's pieces already sit in their true relative places, so putting each at its own spot is the same
+	# as sliding the whole group by one offset; doing it per piece just keeps the result free of drift.
+	for member_id in moved:
+		var member: PuzzlePieceState = pieces[member_id]
+		member.current_position = member.correct_position
+		member.owner_peer_id = 0
+		piece_changed.emit(member_id)
+	if from_bank:
+		bank_changed.emit()
+	snap_piece(piece_id, ConnectionSource.POWER)
+	return moved
+
+func _group_key(piece: PuzzlePieceState) -> int:
+	return piece.cluster_id if piece.is_on_table and piece.cluster_id >= 0 else -1 - piece.piece_id
+
+func power_group_key(piece_id: int) -> int:
+	return _group_key(pieces[piece_id])
+
+func is_power_group_held(piece_id: int) -> bool:
+	return _group_is_held(pieces[piece_id])
+
+func _group_is_held(piece: PuzzlePieceState) -> bool:
+	if not piece.is_on_table:
+		return false
+	for member_id in cluster_members(piece.piece_id):
+		if pieces[member_id].owner_peer_id != 0:
+			return true
+	return false
+
+func _near_join_target(piece_id: int) -> bool:
+	var tolerance := minf(cell_size.x, cell_size.y) * 0.35
+	for id in cluster_members(piece_id):
+		var member: PuzzlePieceState = pieces[id]
+		var centre := member.current_position + member.piece_size * 0.5
+		var correct_centre := member.correct_position + member.piece_size * 0.5
+		for side in range(4):
+			var neighbor_id := _correct_neighbor(member, side)
+			if neighbor_id < 0:
+				continue
+			var neighbor: PuzzlePieceState = pieces[neighbor_id]
+			if not neighbor.is_on_table or neighbor.cluster_id == member.cluster_id:
+				continue
+			var neighbor_centre := neighbor.current_position + neighbor.piece_size * 0.5
+			var neighbor_correct_centre := neighbor.correct_position + neighbor.piece_size * 0.5
+			var expected := neighbor_centre + (correct_centre - neighbor_correct_centre).rotated(deg_to_rad(neighbor.current_rotation))
+			if centre.distance_to(expected) <= tolerance:
+				return true
+	return false
+
+func _try_lock(cluster_id: int, source: int = ConnectionSource.MANUAL) -> void:
 	if not clusters.has(cluster_id):
 		return
 	var members: Array = clusters[cluster_id]
@@ -235,10 +381,15 @@ func _try_lock(cluster_id: int) -> void:
 		already = already or pieces[id].is_locked
 	var sides := []
 	if not already:
-		sides = complete_sides(members)
-		if sides.is_empty():
+		var anchor_id := -1
+		for id in corner_ids():
+			if members.has(id):
+				anchor_id = id
+				break
+		if anchor_id < 0:
 			return
-		var anchor: PuzzlePieceState = pieces[members[0]]
+		sides = complete_sides(members)
+		var anchor: PuzzlePieceState = pieces[anchor_id]
 		var tolerance := minf(cell_size.x, cell_size.y) * 0.45
 		for id in members:
 			if pieces[id].current_rotation != 0:
@@ -258,6 +409,7 @@ func _try_lock(cluster_id: int) -> void:
 	for id in members:
 		piece_changed.emit(id)
 	if not newly_locked.is_empty():
+		main_puzzle_connected.emit(newly_locked.duplicate(), source)
 		group_locked.emit(cluster_id, members.duplicate(), sides)
 
 func locked_count() -> int:
@@ -270,7 +422,7 @@ func locked_count() -> int:
 func _edges_touch(a: PuzzlePieceState, side: int, b: PuzzlePieceState) -> bool:
 	var a_edge := _world_edge(a, side)
 	var b_edge := _world_edge(b, (side + 2) % 4)
-	var tolerance_squared := pow(maxf(2.0, minf(cell_size.x, cell_size.y) * 0.035), 2)
+	var tolerance_squared := pow(maxf(2.0, minf(cell_size.x, cell_size.y) * 0.09), 2)
 	for i in range(a_edge.size() - 1):
 		for j in range(b_edge.size() - 1):
 			if Geometry2D.segment_intersects_segment(a_edge[i], a_edge[i + 1], b_edge[j], b_edge[j + 1]) != null:

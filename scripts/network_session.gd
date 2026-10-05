@@ -22,6 +22,14 @@ signal server_disconnected
 signal peer_joined(peer_id: int)
 signal peer_left(peer_id: int)
 signal full_state_received(config: Dictionary, snapshots: Array)
+# Lightning is decided by the host alone; these tell a client what the host did so it can show the same thing.
+signal lightning_activated_received
+signal lightning_strike_received(piece_id: int, member_ids: Array)
+signal magnet_activated_received
+signal magnet_pull_received(piece_id: int, member_ids: Array)
+signal scoring_sync_received(state: Dictionary, event: Dictionary)
+signal edge_pulse_requested
+signal edge_pulse_received(piece_ids: Array)
 
 enum Mode { SOLO, HOST, CLIENT }
 
@@ -49,6 +57,9 @@ func is_client() -> bool:
 	return mode == Mode.CLIENT
 
 func local_player_id() -> int:
+	# Solo play uses the manager's unowned player ID. SceneMultiplayer has no peer to query then.
+	if is_solo() or multiplayer.multiplayer_peer == null:
+		return 0
 	return multiplayer.get_unique_id()
 
 func start_host(port: int) -> Error:
@@ -145,19 +156,57 @@ func request_rotate(piece_id: int) -> bool:
 		_rpc_request_rotate.rpc_id(1, piece_id)
 	return applied
 
-func request_release(piece_id: int) -> bool:
+func request_release(piece_id: int, count_failed_attempt: bool = true) -> bool:
 	# manager.request_release()'s return value means "snapped into a neighbor", not
 	# "release succeeded" (see PuzzleManager.request_release/snap_piece) -- releasing at
 	# a spot with no matching neighbor is the common case and must still be broadcast,
 	# or peers never learn ownership was cleared and the piece stays locked.
 	var piece := manager.get_piece(piece_id)
 	var was_owned := piece != null and piece.is_on_table and piece.owner_peer_id == local_player_id()
-	var joined := manager.request_release(piece_id, local_player_id())
+	var joined := manager.request_release(piece_id, local_player_id(), count_failed_attempt)
 	if was_owned and is_host():
 		_broadcast_cluster(piece_id)
 	elif was_owned and is_client():
-		_rpc_request_release.rpc_id(1, piece_id)
+		_rpc_request_release.rpc_id(1, piece_id, count_failed_attempt)
 	return joined
+
+func announce_scoring(state: Dictionary, event: Dictionary) -> void:
+	if is_host():
+		_sync_scoring.rpc(state, event)
+
+func request_edge_pulse() -> void:
+	if is_client():
+		_rpc_request_edge_pulse.rpc_id(1)
+
+func announce_edge_pulse(piece_ids: Array) -> void:
+	if is_host():
+		_sync_edge_pulse.rpc(piece_ids)
+
+# --- Lightning (host only; clients just watch) ---
+
+func announce_lightning_activated() -> void:
+	if is_host():
+		_sync_lightning_activated.rpc()
+
+func announce_lightning_strike(piece_id: int, member_ids: Array) -> void:
+	if is_host():
+		_sync_lightning_strike.rpc(piece_id, member_ids)
+
+# Sends the final state of the struck group (which by now includes whatever it joined) to every peer.
+func broadcast_lightning_result(piece_id: int) -> void:
+	broadcast_power_result(piece_id)
+
+func broadcast_power_result(piece_id: int) -> void:
+	if is_host():
+		_broadcast_cluster(piece_id)
+
+func announce_magnet_activated() -> void:
+	if is_host():
+		_sync_magnet_activated.rpc()
+
+func announce_magnet_pull(piece_id: int, member_ids: Array) -> void:
+	if is_host():
+		_sync_magnet_pull.rpc(piece_id, member_ids)
 
 # --- Host-side connection lifecycle ---
 
@@ -248,15 +297,20 @@ func _rpc_request_rotate(piece_id: int) -> void:
 	_broadcast_cluster(piece_id)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_request_release(piece_id: int) -> void:
+func _rpc_request_release(piece_id: int, count_failed_attempt: bool = true) -> void:
 	if not is_host():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	var piece := manager.get_piece(piece_id)
 	var was_owned := piece != null and piece.is_on_table and piece.owner_peer_id == sender
-	manager.request_release(piece_id, sender)
+	manager.request_release(piece_id, sender, count_failed_attempt)
 	if was_owned:
 		_broadcast_cluster(piece_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_request_edge_pulse() -> void:
+	if is_host():
+		edge_pulse_requested.emit()
 
 # --- RPCs: host -> peers broadcasts ---
 
@@ -282,6 +336,30 @@ func _sync_piece(snapshot: Dictionary) -> void:
 func _sync_completed() -> void:
 	manager.completion_announced = true
 	manager.puzzle_completed.emit()
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_lightning_activated() -> void:
+	lightning_activated_received.emit()
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_lightning_strike(piece_id: int, member_ids: Array) -> void:
+	lightning_strike_received.emit(piece_id, member_ids)
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_magnet_activated() -> void:
+	magnet_activated_received.emit()
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_magnet_pull(piece_id: int, member_ids: Array) -> void:
+	magnet_pull_received.emit(piece_id, member_ids)
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_scoring(state: Dictionary, event: Dictionary) -> void:
+	scoring_sync_received.emit(state, event)
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_edge_pulse(piece_ids: Array) -> void:
+	edge_pulse_received.emit(piece_ids)
 
 @rpc("authority", "call_remote", "reliable")
 func _full_sync(config: Dictionary, snapshots: Array) -> void:

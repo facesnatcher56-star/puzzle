@@ -18,6 +18,7 @@ const AUTOSAVE_INTERVAL := 2.0
 
 var manager: PuzzleManager
 var network: NetworkSession
+var scoring := RunScoring.new()
 
 var image_id := "" # "" = the classic Emberbound puzzle, otherwise a PuzzleCatalog.RANDOM_IMAGES key
 var source: Texture2D = PuzzleCatalog.SOURCE_IMAGE
@@ -32,6 +33,11 @@ var seed_value := 52813
 # unrotated start.
 var random_rotation := true
 
+# The Lightning Zone of the running puzzle (null for a save from before zones existed). It is part of the
+# puzzle's configuration, so it is saved, and sent to joining players, with the rest of it.
+var lightning_zone: LightningZone
+var magnet_zone: MagnetZone
+
 var save_slot := "" # file slot the running puzzle autosaves into; "" while a client (clients never save)
 var save_dirty := false
 var needs_new_slot := false # a completed puzzle's save slot is retired; the next puzzle gets a fresh one
@@ -44,6 +50,8 @@ var _autosave_timer: Timer
 func setup(p_manager: PuzzleManager, p_network: NetworkSession) -> void:
 	manager = p_manager
 	network = p_network
+	scoring.setup(manager, network)
+	scoring.state_changed.connect(mark_dirty)
 	manager.piece_changed.connect(mark_dirty.unbind(1))
 	manager.pieces_joined.connect(mark_dirty.unbind(2))
 	manager.group_locked.connect(mark_dirty.unbind(3))
@@ -100,6 +108,11 @@ func start_puzzle(new_seed: bool) -> void:
 		push_error("Puzzle generation failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
 	manager.configure(generated, cell, columns, rows)
+	scoring.reset()
+	var zone_rng := RandomNumberGenerator.new()
+	zone_rng.randomize()
+	lightning_zone = LightningZone.random(columns, rows, zone_rng)
+	magnet_zone = MagnetZone.random(columns, rows, zone_rng, lightning_zone)
 	puzzle_started.emit(generated)
 	if network.is_host():
 		network.broadcast_full_state()
@@ -126,9 +139,15 @@ func restore_puzzle(saved: Dictionary) -> void:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
 	manager.configure(generated, cell, columns, rows)
+	scoring.from_dict(saved.get("scoring", {}) if saved.get("scoring", {}) is Dictionary else {})
+	var saved_zone = saved.get("lightning", {})
+	lightning_zone = LightningZone.from_dict(saved_zone, columns, rows) if typeof(saved_zone) == TYPE_DICTIONARY else null
+	var saved_magnet = saved.get("magnet", {})
+	magnet_zone = MagnetZone.from_dict(saved_magnet, columns, rows) if typeof(saved_magnet) == TYPE_DICTIONARY else null
 	restoring = true
 	manager.apply_snapshots(saved.pieces) # emits piece_changed for every piece; the board creates each on-table view reactively
 	restoring = false
+	scoring.reconcile_legacy_anchors()
 	manager.started_at = Time.get_ticks_msec() - int(saved.get("elapsed_ms", 0))
 	puzzle_restored.emit(generated)
 
@@ -151,11 +170,17 @@ func apply_image(id: String) -> void:
 # --- configuration shared with saves and the network ---
 
 func puzzle_config() -> Dictionary:
-	return {
+	var config := {
 		"seed_value": seed_value, "columns": columns, "rows": rows,
 		"rotation_enabled": true, "image_id": image_id, # key kept so saves stay readable by older builds
 		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
 	}
+	if lightning_zone != null:
+		config["lightning"] = lightning_zone.to_dict()
+	if magnet_zone != null:
+		config["magnet"] = magnet_zone.to_dict()
+	config["scoring"] = scoring.to_dict()
+	return config
 
 # --- saving ---
 

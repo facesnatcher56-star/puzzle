@@ -9,6 +9,9 @@ extends Node2D
 #   LobbyController        the main menu, load/collection/host/join/settings and the pause menu
 #   ReferenceWindow        the floating reference picture
 #   CompletionController   snap/lock celebrations, the finale and the Collection entry
+#   LightningController    the Lightning Zone: charging, activation and strikes (LightningView draws them)
+#   MagnetController       the Magnet Zone: fixed perimeter pulls (MagnetView draws them)
+#   EdgePulseController    a Charge-funded search for useful border pieces
 
 @onready var camera: Camera2D = $Camera2D
 @onready var board: PuzzleBoard = $Pieces
@@ -25,6 +28,12 @@ var input_controller: PuzzleInputController
 var lobby: LobbyController
 var reference: ReferenceWindow
 var completion: CompletionController
+var lightning: LightningController
+var lightning_view: LightningView
+var magnet: MagnetController
+var magnet_view: MagnetView
+var score_view: RunScoreView
+var edge_pulse: EdgePulseController
 
 var board_glow := 0.0 # golden frame glow during the finale
 
@@ -86,6 +95,18 @@ func _create_controllers() -> void:
 	completion.fx = fx
 	completion.set_board_glow = Callable(self, "set_board_glow")
 	add_child(completion)
+	lightning = LightningController.new()
+	lightning.setup(session, manager, network)
+	add_child(lightning)
+	lightning_view = LightningView.new()
+	lightning_view.setup(session, manager, board, lightning, fx, sfx)
+	add_child(lightning_view)
+	magnet = MagnetController.new()
+	magnet.setup(session, manager, network)
+	add_child(magnet)
+	magnet_view = MagnetView.new()
+	magnet_view.setup(session, manager, board, magnet, fx, sfx)
+	add_child(magnet_view)
 	input_controller = PuzzleInputController.new()
 	input_controller.manager = manager
 	input_controller.network = network
@@ -108,6 +129,8 @@ func _connect_signals() -> void:
 	manager.pieces_joined.connect(_on_pieces_joined)
 	manager.group_locked.connect(completion.on_group_locked)
 	manager.puzzle_completed.connect(completion.on_completed)
+	session.scoring.awarded.connect(completion.on_scoring_awarded)
+	session.scoring.tier_rose.connect(completion.on_scoring_tier_rose)
 	# the session
 	session.puzzle_resetting.connect(_on_puzzle_resetting)
 	session.image_changed.connect(_on_image_changed)
@@ -218,6 +241,13 @@ func _build_screen() -> void:
 	bank = PieceBank.new()
 	ui_root.add_child(bank)
 	input_controller.attach_ui(ui_root, bank)
+	score_view = RunScoreView.new()
+	score_view.setup(session.scoring, manager, session)
+	ui_root.add_child(score_view)
+	edge_pulse = EdgePulseController.new()
+	edge_pulse.setup(manager, session.scoring, network, board, bank)
+	add_child(edge_pulse)
+	score_view.edge_pulse_requested.connect(edge_pulse.activate)
 	_build_complete_banner()
 	completion.bank = bank
 	completion.banner = complete_banner
@@ -317,6 +347,8 @@ func _fill_size_picker() -> void:
 # --- reacting to the session ---
 
 func _on_puzzle_resetting() -> void:
+	if edge_pulse != null:
+		edge_pulse.clear()
 	board.clear()
 	completion.reset()
 	input_controller.reset()

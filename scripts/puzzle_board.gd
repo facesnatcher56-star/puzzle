@@ -15,6 +15,15 @@ var network: NetworkSession
 var views := {} # piece id -> PuzzlePieceView for every piece on the table
 var selected_id := -1
 var highlight_kind := "" # "EDGES" or "CORNERS" while that bank button is hovered/pressed
+var pulse_ids := {}
+
+# Pieces whose next update should glide to their new place instead of jumping there (lightning).
+const GLIDE_LEAD_MSEC := 2500 # how long before the move a glide is announced, at the most
+var glide_enabled := DisplayServer.get_name() != "headless"
+var glide_duration := 0.55
+var _glide_until := {} # piece id -> msec until which updates glide
+var _bank_glide := {} # magnet arrivals start below the board instead of appearing at their destination
+var _glide_tweens := {} # piece id -> Tween
 
 func setup(p_manager: PuzzleManager, p_session: PuzzleSession, p_network: NetworkSession) -> void:
 	manager = p_manager
@@ -32,6 +41,10 @@ func clear() -> void:
 		child.queue_free()
 	views.clear()
 	selected_id = -1
+	_glide_until.clear()
+	_bank_glide.clear()
+	_glide_tweens.clear()
+	pulse_ids.clear()
 
 # --- keeping views in step with the manager ---
 
@@ -41,18 +54,64 @@ func on_piece_changed(piece_id: int) -> void:
 	var piece := manager.get_piece(piece_id)
 	if piece == null or not piece.is_on_table:
 		return
-	if not views.has(piece_id):
+	var gliding := glide_enabled and Time.get_ticks_msec() < int(_glide_until.get(piece_id, 0))
+	var existed := views.has(piece_id)
+	if not existed:
 		var new_view: PuzzlePieceView = PIECE_SCENE.instantiate()
 		add_child(new_view)
 		new_view.table_mode = true
 		new_view.manager = manager
 		new_view.setup(piece, session.source, piece.piece_size)
 		views[piece_id] = new_view
-	views[piece_id].place_centered(piece.current_position + piece.piece_size * 0.5)
+	var view: PuzzlePieceView = views[piece_id]
+	var from_position := view.position
+	var from_rotation := view.rotation_degrees
+	view.place_centered(piece.current_position + piece.piece_size * 0.5)
+	if _glide_tweens.has(piece_id):
+		_glide_tweens[piece_id].kill()
+		_glide_tweens.erase(piece_id)
+	if gliding and existed:
+		_glide_view(view, piece, from_position, from_rotation)
+	elif gliding and _bank_glide.has(piece_id):
+		_glide_view(view, piece, view.position + Vector2(0, 360), view.rotation_degrees)
+		_bank_glide.erase(piece_id)
+	elif gliding:
+		view.pulse(0.2) # a piece fetched from the bank has nowhere to fly from, so it swells into place
 	views[piece_id].refresh_seams()
 	views[piece_id].set_locked(piece.is_locked)
-	if highlight_kind != "":
+	if highlight_kind != "" or not pulse_ids.is_empty():
 		refresh_type_highlight()
+
+# Lets the next update of each of these pieces glide to its new place. Called just before they move.
+func glide(piece_ids: Array) -> void:
+	var until := Time.get_ticks_msec() + GLIDE_LEAD_MSEC
+	for id in piece_ids:
+		_glide_until[id] = until
+
+func magnet_glide(piece_ids: Array) -> void:
+	glide(piece_ids)
+	for id in piece_ids:
+		if not views.has(id):
+			_bank_glide[id] = true
+		elif glide_enabled:
+			views[id].pulse(0.13)
+
+# The view has just been put at its final place; slide it there from where it was.
+func _glide_view(view: PuzzlePieceView, piece: PuzzlePieceState, from_position: Vector2, from_rotation: float) -> void:
+	var final_position := view.position
+	var final_rotation := view.rotation_degrees
+	var turn := wrapf(final_rotation - from_rotation, -180.0, 180.0)
+	view.position = from_position
+	view.rotation_degrees = from_rotation
+	view.z_index = 12
+	var tween := view.create_tween().set_parallel(true)
+	tween.tween_property(view, "position", final_position, glide_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(view, "rotation_degrees", from_rotation + turn, glide_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.chain().tween_callback(func():
+		view.place_centered(piece.current_position + piece.piece_size * 0.5)
+		view.z_index = 0
+		_glide_tweens.erase(piece.piece_id))
+	_glide_tweens[piece.piece_id] = tween
 
 # --- picking and selecting ---
 
@@ -191,8 +250,14 @@ func set_type_highlight(kind: String) -> void:
 	highlight_kind = kind
 	refresh_type_highlight()
 
+func set_pulse_highlight(ids: Array) -> void:
+	pulse_ids.clear()
+	for id in ids:
+		pulse_ids[int(id)] = true
+	refresh_type_highlight()
+
 func refresh_type_highlight() -> void:
 	for piece_id in views:
 		var piece := manager.get_piece(piece_id)
-		var lit := highlight_kind != "" and piece != null and manager.cluster_members(piece_id).size() == 1 and (piece.is_corner_piece if highlight_kind == "CORNERS" else piece.is_edge_piece)
+		var lit := pulse_ids.has(piece_id) or (highlight_kind != "" and piece != null and manager.cluster_members(piece_id).size() == 1 and (piece.is_corner_piece if highlight_kind == "CORNERS" else piece.is_edge_piece))
 		views[piece_id].set_flagged(lit)

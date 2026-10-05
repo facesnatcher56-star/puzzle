@@ -23,6 +23,7 @@ var header: HBoxContainer
 var count_label: Label
 var placed_label: Label
 var buttons := {}
+var pulse_ids := {}
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -123,7 +124,23 @@ func configure(states: Array[PuzzlePieceState], image: Texture2D, seed_value: in
 		display_order[swap_index] = temporary
 	selected_id = -1
 	filter_name = "ALL"
+	pulse_ids.clear()
 	refresh()
+
+func set_pulse_highlight(ids: Array) -> void:
+	pulse_ids.clear()
+	for id in ids:
+		pulse_ids[int(id)] = true
+	for item in row.get_children():
+		(item as PieceBankItem).set_pulsed(pulse_ids.has(item.piece_id))
+
+func reveal_first_pulse_item() -> void:
+	if collapsed:
+		toggle_collapsed()
+	for item in row.get_children():
+		if pulse_ids.has(item.piece_id):
+			scroll.ensure_control_visible(item)
+			return
 
 func set_filter(value: String) -> void:
 	filter_name = value
@@ -148,6 +165,7 @@ func refresh() -> void:
 		row.add_child(item)
 		item.setup(piece, source, piece.piece_size)
 		item.set_active(piece.piece_id == selected_id)
+		item.set_pulsed(pulse_ids.has(piece_id))
 		item.hovered.connect(func(id: int, pos: Vector2): piece_hovered.emit(id, pos))
 		item.unhovered.connect(func(id: int): piece_unhovered.emit(id))
 		item.pressed.connect(func(id: int, pos: Vector2): piece_pressed.emit(id, pos))

@@ -80,11 +80,11 @@ func _run() -> void:
 	_check(not game.input_controller.preview_panel.visible, "magnifier closes")
 	var first: PuzzlePieceState = manager.pieces[0]
 	var free_anchor := Vector2(2300, -1350)
-	_check(manager.request_place_from_bank(0, first.correct_position), "piece leaves bank")
+	_check(manager.request_place_from_bank(0, free_anchor + Vector2(33, -20)), "piece leaves bank")
 	_check(game.bank.row.get_child_count() == 47, "bank removes placed piece")
-	_check(not manager.request_release(0), "board position alone never snaps a piece")
+	_check(not manager.request_release(0), "a loose corner away from its anchor does not snap")
 	manager.request_move(0, free_anchor)
-	_check(first.current_position == free_anchor, "board position is ignored")
+	_check(first.current_position == free_anchor, "a loose corner can be moved freely")
 	var wrong: PuzzlePieceState = manager.pieces[3]
 	manager.request_place_from_bank(3, free_anchor + Vector2(game.session.cell.x + 2, 2))
 	_check(not manager.request_release(3), "wrong neighbor cannot join when nearby")
@@ -92,6 +92,20 @@ func _run() -> void:
 	manager.request_place_from_bank(1, free_anchor + Vector2(first.piece_size.x + 4, 3))
 	_check(manager.request_release(1), "correct touching neighbor joins anywhere")
 	_check(manager.cluster_members(0).size() == 2, "joined pieces share a cluster")
+	# A correct neighbor just beyond the old 15% contact radius should now join, while a more distant
+	# neighbor still needs to be moved closer. The existing ID, edge and rotation checks remain in force.
+	var forgiving := PuzzleManager.new()
+	var forgiving_pieces := PuzzleGenerator.generate(game.session.source, 8, 6, 52813, game.session.board_size, false)
+	forgiving.configure(forgiving_pieces, game.session.cell, 8, 6)
+	var base := Vector2(2400, -800)
+	forgiving.request_place_from_bank(0, base)
+	var true_delta: Vector2 = forgiving.pieces[1].correct_position - forgiving.pieces[0].correct_position
+	forgiving.request_place_from_bank(1, base + true_delta + Vector2(game.session.cell.x * 0.18, 0))
+	_check(forgiving.request_release(1), "correct neighbor snaps from 18% of a cell away")
+	forgiving.request_place_from_bank(8, base + forgiving.pieces[8].correct_position - forgiving.pieces[0].correct_position + Vector2(0, game.session.cell.y * 0.25))
+	_check(not forgiving.request_release(8), "25% of a cell is still too far to snap")
+	forgiving.request_move(8, base + forgiving.pieces[8].correct_position - forgiving.pieces[0].correct_position + Vector2(0, minf(game.session.cell.x, game.session.cell.y) * 0.18))
+	_check(forgiving.request_release(8), "a correct vertical neighbor also snaps at the increased radius")
 	_check(second.current_position.distance_to(free_anchor + Vector2(first.piece_size.x, 0)) < 0.01, "joint aligns exactly")
 	_check(first.current_position == free_anchor, "stationary cluster stays in place")
 	_check(manager.request_pickup(1), "joined group can be picked up")

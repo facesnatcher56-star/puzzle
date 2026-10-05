@@ -16,6 +16,7 @@ var next_player := 0
 var streak := 0
 var last_snap_msec := -100000
 var cache := {}
+var last_reward_msec := -100000
 
 func _ready() -> void:
 	for i in range(10):
@@ -39,6 +40,47 @@ func snap(group_size: int, huge: bool = false) -> void:
 		kind = "medium"
 	_play(_stream("%s_%d" % [kind, note], func(): return _render_snap(kind, note)), -4.0 if kind == "small" else -2.0)
 
+# Scored main-puzzle joins use the existing snap timbres. Combo and newly connected cluster size
+# choose how many impact/bell layers they get; pitch adds body without a large volume jump.
+func reward_snap(combo_tier: int, piece_count: int, automatic: bool = false) -> void:
+	if not enabled:
+		return
+	var now := Time.get_ticks_msec()
+	if automatic and piece_count < 7 and now - last_reward_msec < 170:
+		return # closely spaced board-power singles should not become a machine-gun sound
+	last_reward_msec = now
+	var size_bucket := _reward_size_bucket(piece_count)
+	var tier := clampi(combo_tier, 0, 3)
+	var kind := reward_kind(tier, piece_count)
+	var note: int = SCALE[mini(tier * 2 + size_bucket, SCALE.size() - 1)]
+	var pitch := 1.0 - tier * 0.025 - (0.05 if size_bucket == 4 else 0.0)
+	_play(_stream("%s_%d" % [kind, note], func(): return _render_snap(kind, note)), -4.0 if kind == "small" else -3.0, pitch)
+
+static func _reward_size_bucket(piece_count: int) -> int:
+	var size_bucket := 0
+	if piece_count >= 11:
+		size_bucket = 4
+	elif piece_count >= 7:
+		size_bucket = 3
+	elif piece_count >= 4:
+		size_bucket = 2
+	elif piece_count >= 2:
+		size_bucket = 1
+	return size_bucket
+
+static func reward_kind(combo_tier: int, piece_count: int) -> String:
+	var kinds := [
+		["small", "small", "medium", "large", "huge"],
+		["medium", "medium", "large", "large", "huge"],
+		["large", "large", "large", "huge", "huge"],
+		["large", "huge", "huge", "huge", "huge"]
+	]
+	return kinds[clampi(combo_tier, 0, 3)][_reward_size_bucket(piece_count)]
+
+func combo_up() -> void:
+	if enabled:
+		_play(_stream("combo_up", func(): return _make(0.44, func(t: float): return _bell(t, _freq(7), 10.0, 0.19) + _bell(t - 0.08, _freq(12), 11.0, 0.14))), -9.0)
+
 func drop() -> void:
 	_play(_stream("drop", func(): return _render_tap(0.9)), -12.0)
 
@@ -51,15 +93,26 @@ func pickup() -> void:
 func complete() -> void:
 	_play(_stream("complete", func(): return _render_complete()), -1.0)
 
+# Lightning: a crack with a rumble under it.
+func zap() -> void:
+	_play(_stream("zap", func(): return _render_zap()), -3.0)
+
+func magnet_hum() -> void:
+	_play(_stream("magnet_hum", func(): return _render_magnet_hum()), -7.0)
+
+func magnet_pull() -> void:
+	_play(_stream("magnet_pull", func(): return _render_magnet_pull()), -8.0)
+
 # --- playback ---
 
-func _play(stream: AudioStream, volume_db: float) -> void:
+func _play(stream: AudioStream, volume_db: float, pitch: float = 1.0) -> void:
 	if not enabled or players.is_empty():
 		return
 	var player := players[next_player]
 	next_player = (next_player + 1) % players.size()
 	player.stream = stream
 	player.volume_db = volume_db
+	player.pitch_scale = pitch
 	player.play()
 
 func _stream(key: String, builder: Callable) -> AudioStream:
@@ -155,3 +208,20 @@ func _render_complete() -> AudioStreamWAV:
 		for k in range(14):
 			sound += _sparkle(t - 0.9 - k * 0.11, 2200.0 + (k * 337) % 1800, 0.06)
 		return sound)
+
+func _render_zap() -> AudioStreamWAV:
+	return _make(0.9, func(t: float):
+		var crack := (randf() * 2.0 - 1.0) * exp(-t * 38.0) * 0.8
+		var buzz := sin(TAU * (1400.0 - 900.0 * minf(t * 6.0, 1.0)) * t) * exp(-t * 11.0) * 0.32
+		var rumble := sin(TAU * (70.0 + 40.0 * exp(-t * 9.0)) * t) * exp(-t * 4.5) * 0.7
+		return crack + buzz + rumble)
+
+func _render_magnet_hum() -> AudioStreamWAV:
+	return _make(0.85, func(t: float):
+		var swell := sin(minf(t / 0.28, 1.0) * PI * 0.5) * exp(-maxf(t - 0.3, 0.0) * 3.0)
+		return (sin(TAU * 92.0 * t) * 0.32 + sin(TAU * 184.0 * t) * 0.18 + sin(TAU * 279.0 * t) * 0.1) * swell)
+
+func _render_magnet_pull() -> AudioStreamWAV:
+	return _make(0.42, func(t: float):
+		var sweep := sin(TAU * (150.0 + 600.0 * t) * t) * exp(-t * 7.0) * 0.28
+		return sweep + _thock(t - 0.18, 0.3))

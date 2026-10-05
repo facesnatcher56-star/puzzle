@@ -81,6 +81,10 @@ func _run() -> void:
 
 	_check(client_network.request_pickup(0), "client picks up its own placed piece")
 	await _poll_until(func(): return host_manager.get_piece(0).owner_peer_id == client_id, 120, "host records the client as the piece's owner")
+	var held_rotation: int = client_manager.get_piece(0).current_rotation
+	_check(client_network.request_rotate(0), "client rotates a piece while holding it")
+	await _poll_until(func(): return host_manager.get_piece(0).current_rotation == (held_rotation + 90) % 360, 120, "host receives the held rotation")
+	_check(client_manager.get_piece(0).owner_peer_id == client_id and host_manager.get_piece(0).owner_peer_id == client_id, "held rotation keeps ownership on both peers")
 
 	client_network.request_move(0, Vector2(250, 175))
 	await _poll_until(func(): return host_manager.get_piece(0).current_position.distance_to(Vector2(250, 175)) < 1.0, 180, "host receives the client's move")

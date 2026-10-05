@@ -44,10 +44,19 @@ func _run() -> void:
 	m.request_pickup(30)
 	m.request_release(30)
 	_check(not m.pieces[30].is_locked, "a loose piece elsewhere stays free")
-	# Incomplete side: not locked.
+	# An incomplete side can still grow from its corners.
 	var m2 := _fresh(2)
 	_place(m2, [0, 1, 2, 3, 5, 6, 7], Vector2(5, 5))
-	_check(m2.locked_count() == 0, "a side with a piece missing does not lock")
+	_check(m2.locked_count() == 7 and m2.pieces[0].is_locked and m2.pieces[7].is_locked, "incomplete edges grow from their corners")
+	var individual := _fresh(21)
+	_place(individual, [0], Vector2(7, 5))
+	_check(individual.locked_count() == 1 and individual.anchored_corner_count() == 1, "a lone correct corner locks immediately")
+	_place(individual, [1, 2, 3], Vector2(800, 650))
+	_check(not individual.pieces[1].is_locked and individual.cluster_members(1).size() == 3, "an edge cluster built away from its anchor remains movable")
+	individual.request_pickup(1)
+	individual.request_move(1, individual.pieces[1].correct_position + Vector2(7, 5))
+	individual.request_release(1)
+	_check(individual.locked_count() == 4 and individual.pieces[3].is_locked, "a loose edge cluster locks when it reaches an anchored corner")
 	# Full side but away from its spot: free; carried onto its spot: locks.
 	var m3 := _fresh(3)
 	_place(m3, top, Vector2(600, 800))

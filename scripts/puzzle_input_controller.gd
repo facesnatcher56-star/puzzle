@@ -20,6 +20,8 @@ var ui_root: Control
 # gesture in progress
 var dragging_table_id := -1
 var drag_offset := Vector2.ZERO
+var drag_start_position := Vector2.ZERO
+var drag_start_rotation := 0
 var mouse_panning := false
 var resizing_bank := false
 var bank_press_id := -1
@@ -80,7 +82,7 @@ func reset() -> void:
 # A menu opened mid-drag: don't leave a piece glued to the cursor behind it.
 func release_for_menu() -> void:
 	if dragging_table_id >= 0:
-		network.request_release(dragging_table_id)
+		network.request_release(dragging_table_id, false)
 		board.set_cluster_z(dragging_table_id, 0)
 		dragging_table_id = -1
 	touch_table_id = -1
@@ -138,10 +140,17 @@ func handle_input(event: InputEvent) -> void:
 		handle_touch_drag(event)
 
 func rotate_selected() -> void:
-	if board.selected_id >= 0:
-		network.request_rotate(board.selected_id)
+	var piece_id := dragging_table_id if dragging_table_id >= 0 else board.selected_id
+	if piece_id >= 0 and network.request_rotate(piece_id) and dragging_table_id >= 0:
+		# A joined cluster rotates around its middle, changing the held member's top-left position.
+		# Refresh the grab offset so the next mouse motion does not jump it back under the cursor.
+		drag_offset = screen_to_world(get_viewport().get_mouse_position()) - manager.get_piece(piece_id).current_position
 
 func handle_mouse_button(event: InputEventMouseButton) -> void:
+	if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and dragging_table_id >= 0:
+		if network.request_rotate(dragging_table_id):
+			drag_offset = screen_to_world(event.position) - manager.get_piece(dragging_table_id).current_position
+		return
 	if reference.handle_mouse_button(event):
 		return
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed and is_table_screen(event.position):
@@ -191,6 +200,8 @@ func handle_mouse_button(event: InputEventMouseButton) -> void:
 	if picked >= 0 and network.request_pickup(picked):
 		sfx.pickup()
 		dragging_table_id = picked
+		drag_start_position = manager.get_piece(picked).current_position
+		drag_start_rotation = manager.get_piece(picked).current_rotation
 		drag_offset = world - manager.get_piece(picked).current_position
 		board.bring_cluster_forward(picked)
 	elif picked < 0 or manager.is_locked(picked):
@@ -246,6 +257,8 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 			return
 		if picked >= 0 and network.request_pickup(picked):
 			touch_table_id = picked
+			drag_start_position = manager.get_piece(picked).current_position
+			drag_start_rotation = manager.get_piece(picked).current_rotation
 			drag_offset = world - manager.get_piece(picked).current_position
 			board.bring_cluster_forward(picked)
 		else:
@@ -334,9 +347,13 @@ func place_bank_piece(piece_id: int, screen_position: Vector2) -> void:
 # Ends a drag: nudges the group clear of anything it would hide, releases it (which snaps it to neighbours),
 # then refreshes the stacking order and finder glow.
 func drop_piece(piece_id: int) -> void:
+	var attempted := true # a piece placed from the bank is a deliberate placement
+	if piece_id == dragging_table_id or piece_id == touch_table_id:
+		var piece := manager.get_piece(piece_id)
+		attempted = piece.current_position.distance_to(drag_start_position) > minf(manager.cell_size.x, manager.cell_size.y) * 0.08 or piece.current_rotation != drag_start_rotation
 	board.nudge_clear_of_covered(piece_id)
 	completion.begin_drop(piece_id)
-	network.request_release(piece_id)
+	network.request_release(piece_id, attempted)
 	completion.end_drop()
 	board.set_cluster_z(piece_id, 0)
 	board.restack()
