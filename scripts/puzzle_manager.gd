@@ -12,6 +12,11 @@ signal failed_connection_attempt
 
 enum ConnectionSource { MANUAL, POWER }
 
+# How far (as a share of the smaller cell side) a piece may sit from its true spot and still join. The contact
+# check uses the same distance: with a tighter one, a shallow V-shaped tab -- whose contour stops touching its
+# groove after about a third of that distance -- refused to join while square and round tabs joined fine.
+const SNAP_TOLERANCE := 0.20
+
 var pieces: Array[PuzzlePieceState] = []
 var cell_size := Vector2.ONE
 var columns := 0
@@ -156,7 +161,7 @@ func snap_piece(piece_id: int, source: int = ConnectionSource.MANUAL) -> bool:
 	var joined_any := false
 	var loose_join_count := 0
 	var moving_cluster: int = piece.cluster_id
-	var contact_tolerance := minf(cell_size.x, cell_size.y) * 0.20
+	var contact_tolerance := minf(cell_size.x, cell_size.y) * SNAP_TOLERANCE
 	while true:
 		var best_target := -1
 		var best_offset := Vector2.ZERO
@@ -492,7 +497,7 @@ func locked_count() -> int:
 func _edges_touch(a: PuzzlePieceState, side: int, b: PuzzlePieceState) -> bool:
 	var a_edge := _world_edge(a, side)
 	var b_edge := _world_edge(b, (side + 2) % 4)
-	var tolerance_squared := pow(maxf(2.0, minf(cell_size.x, cell_size.y) * 0.09), 2)
+	var tolerance_squared := pow(maxf(2.0, minf(cell_size.x, cell_size.y) * SNAP_TOLERANCE), 2)
 	for i in range(a_edge.size() - 1):
 		for j in range(b_edge.size() - 1):
 			if Geometry2D.segment_intersects_segment(a_edge[i], a_edge[i + 1], b_edge[j], b_edge[j + 1]) != null:
