@@ -22,14 +22,18 @@ It also re-imports the project by itself when a new `class_name` script has appe
 Rules that follow from this:
 - Keep scratch scripts **small and quick**: few iterations, no multi-minute benchmarks. If something needs a long
   loop, lower the count first and scale up only if it is fast. Put scratch files outside the repo (a temp dir).
-- Windowed runs (screenshots, frame-rate checks) use `--script` too but need a display: the runner is headless, so for
-  those run the Godot binary directly with a short `timeout` **and** make the script `quit()` on its own; never
-  leave it waiting.
+- Windowed runs (screenshots, frame-rate checks) use `tools/run_tests.py --windowed --script x.gd` (needs a display, same
+  fail-fast watchdog); the script must `quit()` on its own.
+- On Windows the runner needs `GODOT` set to a `*_console.exe` build (e.g. unzip `Godot_v4.7-stable_win64.exe.zip`); it
+  also looks in `~/Downloads`. Never fall back to a bare `timeout`: always use the runner so errors kill the run at once.
 - When adding a test, make it `quit(1)` on any failure and call `quit()` when done, and never leave an `await`
   that can wait forever (use a deadline, as `tests/power_zones_network.gd` does).
 - Tests that open network ports must use their own port (see the ports already used in `tests/*.gd`); they run in parallel.
 
 ## Project conventions
+
+- Effect/UI sprites in `assets/fx/` are rendered by Blender: `blender -b -P tools/render_fx.py` (commit the PNGs). `UiStyle`
+  (9-patch panels/buttons/gem) and `BoardFx` (ring, flash, rays, confetti, sparkles) are the only users of them.
 
 - Godot 4.7, GDScript. The binary is `~/Downloads/Godot_v4.7.2-stable_linux.x86_64` (override with the `GODOT` env var).
 - `scripts/main.gd` is only the composition root. Logic lives in controllers (`PuzzleSession`, `PuzzleBoard`,

@@ -90,16 +90,16 @@ class Slot extends Control:
 		var unlocked := index < 0 or not info.is_empty()
 		var affordable := index < 0 or (unlocked and bar.power_charges >= int(info.cost))
 		var targeting := index >= 0 and bar.targeting_slot == index
-		var box := StyleBoxFlat.new()
-		box.bg_color = Color(0.07, 0.12, 0.14, 0.92)
-		if held or targeting:
-			box.bg_color = Color(0.16, 0.24, 0.24, 0.96)
-		box.border_color = Color(1.0, 0.88, 0.5, 0.95) if (targeting or held) else (Color(0.55, 0.94, 0.84, 0.7) if hovered and unlocked else Color(0.46, 0.77, 0.7, 0.32))
+		var tint := Color.WHITE if (hovered or targeting or held) else Color(0.8, 0.85, 0.85)
 		if denied > 0.0:
-			box.border_color = Color(1.0, 0.4, 0.38, denied)
-		box.set_border_width_all(2 if (targeting or held or denied > 0.0) else 1)
-		box.set_corner_radius_all(9)
-		draw_style_box(box, Rect2(Vector2.ZERO, size))
+			tint = Color.WHITE.lerp(Color(1.0, 0.35, 0.3), denied)
+		if affordable and unlocked and index >= 0 and not (hovered or targeting or held):
+			# a ready power breathes a little
+			tint = tint.lightened(0.08 + 0.06 * sin(Time.get_ticks_msec() * 0.004))
+			queue_redraw()
+		draw_style_box(UiStyle.slot(targeting or held or (hovered and unlocked), tint), Rect2(Vector2.ZERO, size))
+		if (targeting or held) and unlocked:
+			draw_texture_rect(UiStyle.GLOW, Rect2(Vector2(-14, -14), size + Vector2(28, 28)), false, Color(1.0, 0.85, 0.4, 0.28))
 		var fade := 1.0 if (affordable and unlocked) else 0.4
 		if index < 0:
 			AbilityBar.draw_rotate_icon(self, size * 0.5 + Vector2(0, 2), minf(size.x, size.y) * 0.5, Color(0.8, 0.9, 0.88, 0.85))
@@ -289,7 +289,7 @@ func _say(text: String, seconds: float = 1.4) -> void:
 # --- icons (drawn, so they stay sharp at any size) ---
 
 static func draw_diamond(canvas: CanvasItem, center: Vector2, radius: float, color: Color) -> void:
-	canvas.draw_colored_polygon(PackedVector2Array([center + Vector2(0, -radius), center + Vector2(radius, 0), center + Vector2(0, radius), center + Vector2(-radius, 0)]), color)
+	UiStyle.draw_gem(canvas, center, radius * 3.0, color)
 
 static func draw_rotate_icon(canvas: CanvasItem, center: Vector2, size: float, color: Color) -> void:
 	var radius := size * 0.28

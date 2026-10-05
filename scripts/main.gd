@@ -203,6 +203,9 @@ func _draw() -> void:
 		draw_line(Vector2(-5000, y), Vector2(5000, y), Color(1, 1, 1, 0.014), 1)
 	var board_size := session.board_size
 	var frame := Rect2(-board_size * 0.5, board_size)
+	for spread in range(5):
+		var reach := 46.0 - spread * 7.0
+		draw_rect(Rect2(frame.position - Vector2(reach, reach - 8.0), frame.size + Vector2(reach, reach) * 2.0), Color(0.0, 0.02, 0.03, 0.07), true)
 	draw_rect(frame.grow(17), Color(0.05, 0.08, 0.09, 0.45), true)
 	draw_rect(frame.grow(7), Color("ab9e83"), true)
 	draw_rect(frame, Color("637374"), true)
@@ -238,7 +241,11 @@ func _build_screen() -> void:
 	ui_root = Control.new()
 	ui_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	ui_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui_root.theme = UiStyle.theme()
 	ui_layer.add_child(ui_root)
+	var motes := AmbientMotes.new()
+	add_child(motes)
+	move_child(motes, ui_layer.get_index())
 	bank = PieceBank.new()
 	ui_root.add_child(bank)
 	input_controller.attach_ui(ui_root, bank)

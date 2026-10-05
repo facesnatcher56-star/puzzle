@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Works on Linux and Windows (Windows: set GODOT to a *_console.exe, or leave one in ~/Downloads).
 """Runs the headless Godot tests and fails FAST.
 
 A script with a parse or runtime error leaves headless Godot sitting idle forever, so every run is watched live:
@@ -7,20 +8,37 @@ producing output is killed too (--idle, default 20 s), and each test has a hard 
 
   tools/run_tests.py                 all tests in tests/, in parallel
   tools/run_tests.py seams scoring   just those
+  tools/run_tests.py --windowed --script x.gd   same, with a real window (screenshots); the script must quit() itself
   tools/run_tests.py --script /path/to/scratch.gd     any script, same rules (for benchmarks and experiments)
 """
 import glob, os, re, signal, subprocess, sys, threading, time
 
-GODOT = os.environ.get("GODOT", os.path.expanduser("~/Downloads/Godot_v4.7.2-stable_linux.x86_64"))
+WINDOWS = os.name == "nt"
+
+def find_godot():
+    if os.environ.get("GODOT"):
+        return os.environ["GODOT"]
+    if not WINDOWS:
+        return os.path.expanduser("~/Downloads/Godot_v4.7.2-stable_linux.x86_64")
+    # Windows: the console build prints to stdout, which the watchdog needs
+    for pattern in ("~/Downloads/Godot*4.7*console.exe", "~/Downloads/Godot*console.exe", "~/Downloads/**/Godot*4.7*console.exe"):
+        found = glob.glob(os.path.expanduser(pattern), recursive=True)
+        if found:
+            return sorted(found)[-1]
+    sys.exit("Set GODOT to a Godot *_console.exe (unzip Godot_v4.7-stable_win64.exe.zip from Downloads).")
+
+GODOT = find_godot()
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FATAL = re.compile(r"SCRIPT ERROR|Parse Error|Compile Error|Failed to load script|Compilation failed")
 NOISE = re.compile(r"leaked|RID allocations|ObjectDB|resources still in use|at: (clear|cleanup|_free)|^Godot Engine|^\s*$|Vulkan|WARNING: ")
 
+HEADLESS = ["--headless"]
+
 def run(name, args, idle, cap, full=False):
     """Returns (ok, summary lines); `full` keeps all of a passing run's output (for scratch scripts)."""
     start = time.time()
-    proc = subprocess.Popen([GODOT, "--headless", "--path", PROJECT] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, preexec_fn=os.setsid, env={**os.environ, "SEED": os.environ.get("SEED", "")})
+    proc = subprocess.Popen([GODOT] + HEADLESS + ["--path", PROJECT] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"preexec_fn": os.setsid}), env={**os.environ, "SEED": os.environ.get("SEED", "")})
     lines, state = [], {"last": time.time(), "why": None}
     def reader():
         for line in proc.stdout:
@@ -52,8 +70,11 @@ def run(name, args, idle, cap, full=False):
 
 def kill(proc):
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
+        if WINDOWS:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, OSError):
         pass
 
 def refresh_class_cache():
@@ -72,9 +93,11 @@ def main():
         i = argv.index("--idle"); idle = int(argv[i + 1]); del argv[i:i + 2]
     if "--cap" in argv:
         i = argv.index("--cap"); cap = int(argv[i + 1]); del argv[i:i + 2]
+    if "--windowed" in argv:
+        argv.remove("--windowed"); HEADLESS.clear()  # needs a display; the script must quit() itself
     refresh_class_cache()
     if argv[:1] == ["--script"]:
-        ok, info = run(os.path.basename(argv[1]), ["--script", argv[1]], idle, cap, full=True)
+        ok, info = run(os.path.basename(argv[1]), ["--script", os.path.abspath(argv[1])], idle, cap, full=True)
         print("\n".join(info)); sys.exit(0 if ok else 1)
     names = argv or sorted(os.path.basename(p)[:-3] for p in glob.glob(PROJECT + "/tests/*.gd"))
     results, lock = {}, threading.Lock()

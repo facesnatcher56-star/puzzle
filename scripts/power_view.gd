@@ -198,6 +198,8 @@ func _strike(target_rect: Rect2) -> void:
 	sfx.zap()
 	_flash(target_rect.grow(6.0), Color(1.0, 0.97, 0.8), 0.8, 0.45)
 	_bolt(spot)
+	fx.flash(spot, maxf(target_rect.size.x, target_rect.size.y) * 1.4, Color(1.0, 0.95, 0.6), 0.5)
+	fx.rays(spot, maxf(target_rect.size.x, target_rect.size.y) * 1.6, Color(1.0, 0.95, 0.65, 0.8), 0.6, 1.5)
 	fx.ring(spot, maxf(target_rect.size.x, target_rect.size.y) * 1.1, Color(1.0, 0.95, 0.6, 0.95), 0.5, 6.0)
 	fx.sparkles(spot, 22, SPARK, 360.0, 0.7, 7.0)
 
@@ -236,6 +238,7 @@ func _bolt(target: Vector2) -> void:
 	glow.width = 26.0
 	glow.default_color = Color(1.0, 0.9, 0.4, 0.28)
 	glow.joint_mode = Line2D.LINE_JOINT_ROUND
+	glow.material = BoardFx.additive_material()
 	_layer.add_child(glow)
 	var core := Line2D.new()
 	core.points = points

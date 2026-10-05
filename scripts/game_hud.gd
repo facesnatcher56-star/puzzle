@@ -24,6 +24,8 @@ var combo_flame: Flame
 var combo_label: Label
 var charge_bar: ProgressBar
 var charge_label: Label
+var charge_spark: ChargeSpark
+var _last_score := 0
 var charges: Diamonds
 var objective_label: Label
 var network_label: Label
@@ -40,6 +42,24 @@ class Flame extends Control:
 	func _draw() -> void:
 		var points := PackedVector2Array([Vector2(7, 1), Vector2(12, 9), Vector2(11, 16), Vector2(7, 19), Vector2(3, 16), Vector2(2, 9), Vector2(5, 11), Vector2(6, 5)])
 		draw_colored_polygon(points, color)
+
+# A soft pulsing glow riding the leading edge of the Charge bar.
+class ChargeSpark extends Control:
+	var bar: ProgressBar
+	var _time := 0.0
+	func _init() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		material = BoardFx.additive_material()
+	func _process(delta: float) -> void:
+		_time += delta
+		queue_redraw()
+	func _draw() -> void:
+		if bar == null or bar.value <= 0.0:
+			return
+		var x := size.x * float(bar.value / bar.max_value)
+		var radius := 16.0 + 3.0 * sin(_time * 4.0)
+		draw_texture_rect(UiStyle.GLOW, Rect2(Vector2(x - radius, size.y * 0.5 - radius), Vector2(radius, radius) * 2.0), false, Color(0.6, 1.0, 0.9, 0.55))
 
 # Stored Power Charges as diamonds, "◆◆ 2": one filled diamond per charge, up to five, then a count.
 class Diamonds extends Control:
@@ -62,6 +82,9 @@ class Diamonds extends Control:
 		var font := ThemeDB.fallback_font
 		draw_string(font, Vector2(8 + shown * 15, 16), "%d" % count if count <= MAX_SHOWN else "×%d" % count, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.9, 0.6))
 	func _diamond(center: Vector2, radius: float, color: Color, filled: bool) -> void:
+		if filled:
+			UiStyle.draw_gem(self, center, radius * 3.0)
+			return
 		var points := PackedVector2Array([center + Vector2(0, -radius), center + Vector2(radius, 0), center + Vector2(0, radius), center + Vector2(-radius, 0)])
 		if filled:
 			draw_colored_polygon(points, color)
@@ -93,6 +116,8 @@ func _ready() -> void:
 	style.bg_color = Color(0.06, 0.1, 0.12, 0.94)
 	style.border_color = Color(0.46, 0.77, 0.7, 0.3)
 	style.border_width_bottom = 1
+	style.shadow_color = Color(0.45, 0.9, 0.8, 0.16)
+	style.shadow_size = 10
 	style.content_margin_left = 14
 	style.content_margin_right = 8
 	style.content_margin_top = 2
@@ -120,17 +145,18 @@ func _ready() -> void:
 	charge_bar.min_value = 0
 	charge_bar.max_value = 100
 	charge_bar.show_percentage = false
-	charge_bar.custom_minimum_size = Vector2(150, 10)
+	charge_bar.custom_minimum_size = Vector2(150, 14)
 	charge_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	charge_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var track := StyleBoxFlat.new()
 	track.bg_color = Color(0.14, 0.2, 0.22)
 	track.set_corner_radius_all(4)
-	var fill := StyleBoxFlat.new()
-	fill.bg_color = Color(0.45, 0.88, 0.78)
-	fill.set_corner_radius_all(4)
+	var fill := UiStyle.bar_fill(Color(0.45, 0.88, 0.78))
 	charge_bar.add_theme_stylebox_override("background", track)
 	charge_bar.add_theme_stylebox_override("fill", fill)
+	charge_spark = ChargeSpark.new()
+	charge_spark.bar = charge_bar
+	charge_bar.add_child(charge_spark)
 	charge.add_child(charge_bar)
 	charge_label = _label(12, TEAL)
 	charge.add_child(charge_label)
@@ -183,6 +209,9 @@ func _refresh() -> void:
 	if score_label == null:
 		return
 	score_label.text = "SCORE  %s" % _with_commas(scoring.score)
+	if scoring.score > _last_score:
+		_pop(score_label, 1.12)
+	_last_score = scoring.score
 	var tier := scoring.tier()
 	combo_label.text = "NO STREAK" if scoring.streak == 0 else "STREAK %d  ×%s" % [scoring.streak, RunScoring.format_multiplier(scoring.multiplier())]
 	combo_label.add_theme_color_override("font_color", TIER_COLORS[tier])
@@ -247,8 +276,13 @@ func _on_awarded(event: Dictionary) -> void:
 	notice.add_theme_color_override("font_color", TEAL if int(event.source) == PuzzleManager.ConnectionSource.POWER else GOLD)
 	notice.add_theme_color_override("font_outline_color", Color(0.04, 0.07, 0.08, 0.85))
 	notice.add_theme_constant_override("outline_size", 4)
+	notice.add_theme_color_override("font_shadow_color", Color(1.0, 0.85, 0.4, 0.35))
+	notice.add_theme_constant_override("shadow_outline_size", 10)
 	notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(notice)
+	notice.scale = Vector2(0.6, 0.6)
+	notice.pivot_offset = Vector2(60, 20)
+	notice.create_tween().tween_property(notice, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	notice.position = Vector2(clampf(screen.x - 75, 12, maxf(12.0, size.x - 165)), clampf(screen.y - 45, HEIGHT + 40, maxf(HEIGHT + 40, size.y - 190)))
 	_keep_toast(notice)
 	var tween := notice.create_tween().set_parallel(true)
@@ -266,6 +300,11 @@ func _keep_toast(label: Label) -> void:
 		var oldest: Label = _toasts.pop_front()
 		if is_instance_valid(oldest):
 			oldest.queue_free()
+
+func _pop(label: Control, amount: float) -> void:
+	label.pivot_offset = Vector2(0, label.size.y * 0.5)
+	label.scale = Vector2(amount, amount)
+	create_tween().tween_property(label, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 func _on_tier_rose(_tier: int) -> void:
 	if combo_label == null:

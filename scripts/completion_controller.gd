@@ -161,6 +161,8 @@ func _celebrate_join(member_ids: Array, origin: Vector2) -> void:
 	if level >= 1:
 		fx.sparkles(origin, [0, 12, 28, 55][level], Color(1.0, 0.92, 0.65, 1.0), [0.0, 220.0, 320.0, 420.0][level])
 	if level >= 2:
+		fx.rays(origin, [0.0, 0.0, 200.0, 360.0][level], Color(1.0, 0.92, 0.65, 0.75), 0.55)
+		fx.confetti(origin, [0, 0, 30, 70][level], 440.0, 1.6, Vector2.UP, 150.0, 13.0)
 		_shake_camera([0.0, 0.0, 3.0, 6.0][level], 0.28)
 
 # The group has just been bolted to the board: a clunk, a gold ring from its middle and a short shake.
@@ -171,6 +173,9 @@ func _celebrate_lock(member_ids: Array) -> void:
 	var centre := _centre_of(member_ids)
 	fx.ring(centre, 260.0, Color(1.0, 0.82, 0.4, 0.95), 0.6, 9.0)
 	fx.sparkles(centre, 26, Color(1.0, 0.88, 0.5, 1.0), 300.0)
+	fx.rays(centre, 260.0, Color(1.0, 0.9, 0.6, 0.8), 0.7)
+	if member_ids.size() >= 8:
+		fx.confetti(centre, 24, 380.0, 1.4, Vector2.UP, 100.0, 12.0)
 	for member_id in member_ids:
 		if board.views.has(member_id):
 			var view: PuzzlePieceView = board.views[member_id]
@@ -259,6 +264,17 @@ func _play_finale() -> void:
 		var colour: Color = burst_colors[i % burst_colors.size()]
 		burst.tween_callback(func(): fx.sparkles(spot, 38, colour, 520.0, 1.3, 11.0))
 	_shake_camera(5.0, 0.35)
+	# light rays pouring out of the picture, cannons from the bottom corners, then a long shower
+	fx.rays(Vector2.ZERO, board_size.length() * 0.75, Color(1.0, 0.92, 0.6, 0.55), 4.0, 0.25)
+	fx.flash(Vector2.ZERO, board_size.length() * 0.5, Color(1.0, 0.9, 0.6), 1.6)
+	var cannons := create_tween()
+	cannons.tween_interval(0.9)
+	cannons.tween_callback(func():
+		fx.confetti(Vector2(-half_width, board_size.y * 0.5), 110, 1400.0, 2.4, Vector2(1, -1.4), 38.0, 20.0)
+		fx.confetti(Vector2(half_width, board_size.y * 0.5), 110, 1400.0, 2.4, Vector2(-1, -1.4), 38.0, 20.0))
+	var shower := create_tween()
+	shower.tween_interval(1.6)
+	shower.tween_callback(func(): fx.confetti_rain(Rect2(Vector2(-half_width * 1.2, -board_size.y * 0.8), Vector2(board_size.x * 1.2, board_size.y * 0.3)), 140, 3.5, 300.0, 18.0))
 
 # --- helpers ---
 
