@@ -29,8 +29,8 @@ func _run() -> void:
 	_check(scene != null, "main scene loads")
 	var game := scene.instantiate()
 	root.add_child(game)
-	game.size_picker.select(1)
-	game._set_rotation_enabled(false)
+	game.session.size_index = 1
+	game.session.set_rotation_enabled(false)
 	await process_frame
 	await process_frame
 	var manager: PuzzleManager = game.manager
@@ -51,16 +51,16 @@ func _run() -> void:
 			_check(piece.top_edge == 0, "top border is flat")
 		if piece.column == 0:
 			_check(piece.left_edge == 0, "left border is flat")
-		if piece.row == game.rows - 1:
+		if piece.row == game.session.rows - 1:
 			_check(piece.bottom_edge == 0, "bottom border is flat")
-		if piece.column == game.columns - 1:
+		if piece.column == game.session.columns - 1:
 			_check(piece.right_edge == 0, "right border is flat")
-		if piece.column < game.columns - 1:
+		if piece.column < game.session.columns - 1:
 			var neighbor: PuzzlePieceState = manager.pieces[piece.piece_id + 1]
 			_check(piece.right_edge == -neighbor.left_edge, "horizontal edges complement")
 			_check(_matching_edges(_edge(piece, 1), _edge(neighbor, 3)), "horizontal seam geometry matches")
-		if piece.row < game.rows - 1:
-			var neighbor: PuzzlePieceState = manager.pieces[piece.piece_id + game.columns]
+		if piece.row < game.session.rows - 1:
+			var neighbor: PuzzlePieceState = manager.pieces[piece.piece_id + game.session.columns]
 			_check(piece.bottom_edge == -neighbor.top_edge, "vertical edges complement")
 			_check(_matching_edges(_edge(piece, 2), _edge(neighbor, 0)), "vertical seam geometry matches")
 	_check(curved == 48, "every piece has an internal shaped edge")
@@ -73,10 +73,10 @@ func _run() -> void:
 	game.bank.set_filter("TRAY 1")
 	_check(game.bank.row.get_child_count() == 1, "tray filter shows assigned piece")
 	game.bank.set_filter("ALL")
-	game._show_preview(0, Vector2(300, 650))
-	_check(game.preview_panel.visible and game.preview_view != null, "magnifier opens")
-	game._hide_preview()
-	_check(not game.preview_panel.visible, "magnifier closes")
+	game.input_controller.show_preview(0, Vector2(300, 650))
+	_check(game.input_controller.preview_panel.visible and game.input_controller.preview_view != null, "magnifier opens")
+	game.input_controller.hide_preview()
+	_check(not game.input_controller.preview_panel.visible, "magnifier closes")
 	var first: PuzzlePieceState = manager.pieces[0]
 	var free_anchor := Vector2(2300, -1350)
 	_check(manager.request_place_from_bank(0, first.correct_position), "piece leaves bank")
@@ -85,7 +85,7 @@ func _run() -> void:
 	manager.request_move(0, free_anchor)
 	_check(first.current_position == free_anchor, "board position is ignored")
 	var wrong: PuzzlePieceState = manager.pieces[3]
-	manager.request_place_from_bank(3, free_anchor + Vector2(game.cell.x + 2, 2))
+	manager.request_place_from_bank(3, free_anchor + Vector2(game.session.cell.x + 2, 2))
 	_check(not manager.request_release(3), "wrong neighbor cannot join when nearby")
 	var second: PuzzlePieceState = manager.pieces[1]
 	manager.request_place_from_bank(1, free_anchor + Vector2(first.piece_size.x + 4, 3))
@@ -98,8 +98,8 @@ func _run() -> void:
 	manager.request_move(1, second.current_position + Vector2(90, 70))
 	_check(first.current_position.distance_to(before_group_move + Vector2(90, 70)) < 0.01, "dragging one member moves its entire group")
 	manager.request_release(1)
-	var below: PuzzlePieceState = manager.pieces[game.columns]
-	manager.request_place_from_bank(below.piece_id, first.current_position + Vector2(0, game.cell.y + 35))
+	var below: PuzzlePieceState = manager.pieces[game.session.columns]
+	manager.request_place_from_bank(below.piece_id, first.current_position + Vector2(0, game.session.cell.y + 35))
 	_check(not manager.request_release(below.piece_id), "correct neighbor too far away does not join")
 	manager.request_move(below.piece_id, first.current_position + Vector2(3, first.piece_size.y + 2))
 	_check(manager.request_release(below.piece_id), "correct neighbor joins when nearly touching")
@@ -111,21 +111,21 @@ func _run() -> void:
 	_check(manager.cluster_members(0).size() == 5 and wrong.cluster_id == first.cluster_id, "one release merges two groups")
 	var relative_before_spread := second.current_position - first.current_position
 	var position_before_spread := first.current_position
-	game._spread_table_pieces()
+	game.board.spread()
 	_check(first.current_position != position_before_spread, "spread moves a joined group")
 	_check((second.current_position - first.current_position).distance_to(relative_before_spread) < 0.01, "spread preserves group shape")
 	_check(game.bank.placed_label.text.contains("5 / 48"), "placed count updates")
 	var old_zoom: float = game.camera.zoom.x
 	var old_ui_position: Vector2 = game.bank.global_position
-	game._zoom_at(Vector2(500, 300), 1.2)
+	game.input_controller.zoom_at(Vector2(500, 300), 1.2)
 	_check(game.camera.zoom.x > old_zoom, "camera zooms")
 	_check(game.bank.global_position == old_ui_position, "bank stays in screen space")
-	game.reference_overlay.visible = true
-	_check(game.reference_overlay.visible, "reference opens")
-	game.reference_overlay.visible = false
-	var rotation_states := PuzzleGenerator.generate(game.source, 8, 6, 52814, game.BOARD_SIZE)
+	game.reference.visible = true
+	_check(game.reference.visible, "reference opens")
+	game.reference.visible = false
+	var rotation_states := PuzzleGenerator.generate(game.session.source, 8, 6, 52814, PuzzleCatalog.BOARD_SIZE)
 	var rotated_manager := PuzzleManager.new()
-	var rotation_cell := Vector2(game.BOARD_SIZE.x / 8, game.BOARD_SIZE.y / 6)
+	var rotation_cell := Vector2(PuzzleCatalog.BOARD_SIZE.x / 8, PuzzleCatalog.BOARD_SIZE.y / 6)
 	rotated_manager.configure(rotation_states, rotation_cell, 8, 6)
 	rotated_manager.request_place_from_bank(0, Vector2(-2600, 1900))
 	rotated_manager.request_place_from_bank(1, Vector2(-2600, 1900) + Vector2(rotation_states[0].piece_size.x + 2, 1))
@@ -153,9 +153,9 @@ func _run() -> void:
 	_check(rotated_manager.request_release(8), "matching rotated edge joins group")
 	_check(rotated_manager.cluster_members(0).size() == 3, "rotated cluster expands")
 	# Ownership locking: required once more than one actor (a networked peer) can act on the board.
-	var ownership_states := PuzzleGenerator.generate(game.source, 8, 6, 52815, game.BOARD_SIZE)
+	var ownership_states := PuzzleGenerator.generate(game.session.source, 8, 6, 52815, PuzzleCatalog.BOARD_SIZE)
 	var ownership_manager := PuzzleManager.new()
-	var ownership_cell := Vector2(game.BOARD_SIZE.x / 8, game.BOARD_SIZE.y / 6)
+	var ownership_cell := Vector2(PuzzleCatalog.BOARD_SIZE.x / 8, PuzzleCatalog.BOARD_SIZE.y / 6)
 	ownership_manager.configure(ownership_states, ownership_cell, 8, 6)
 	ownership_manager.request_place_from_bank(0, Vector2(-1000, 500), 1)
 	_check(ownership_manager.request_pickup(0, 1), "owner can re-pick up their own piece")
@@ -174,7 +174,7 @@ func _run() -> void:
 	_check(not ownership_manager.request_pickup(joined_id, 2), "a joined cluster is held atomically; player 2 cannot grab any member")
 	ownership_manager.release_pieces_owned_by(1)
 	_check(ownership_states[0].owner_peer_id == 0 and ownership_states[1].owner_peer_id == 0, "release_pieces_owned_by frees every piece held by a disconnecting player")
-	game._start_puzzle(false)
+	game.session.start_puzzle(false)
 	var completion_anchor := Vector2(3100, -2250)
 	var base_correct: Vector2 = manager.pieces[0].correct_position
 	for piece in manager.pieces:
@@ -185,22 +185,22 @@ func _run() -> void:
 	var completed_before: Vector2 = manager.pieces[0].current_position
 	_check(manager.request_move(0, completed_before + Vector2(140, 95)), "completed puzzle remains movable")
 	_check(manager.pieces[47].current_position.distance_to(completion_anchor + manager.pieces[47].correct_position - base_correct + Vector2(140, 95)) < 0.01, "completed cluster moves intact")
-	game._start_puzzle(false)
+	game.session.start_puzzle(false)
 	_check(game.bank.row.get_child_count() == 48, "reset restores bank")
 	_check(not game.bank.collapsed, "reset expands bank")
 	for size_index in [0, 2, 3]:
-		game.size_picker.select(size_index)
-		game._start_puzzle(false)
-		var expected: int = game.columns * game.rows
+		game.session.size_index = size_index
+		game.session.start_puzzle(false)
+		var expected: int = game.session.columns * game.session.rows
 		_check(game.manager.pieces.size() == expected, "%d piece generation" % expected)
 		_check(game.bank.row.get_child_count() == expected, "%d bank entries" % expected)
 		for piece in game.manager.pieces:
 			_check(Geometry2D.triangulate_polygon(piece.outline).size() >= 3, "%d piece %d silhouette triangulates" % [expected, piece.piece_id])
 	for test_seed in range(52800, 52808):
-		var generated := PuzzleGenerator.generate(game.source, 12, 8, test_seed, game.BOARD_SIZE)
+		var generated := PuzzleGenerator.generate(game.session.source, 12, 8, test_seed, PuzzleCatalog.BOARD_SIZE)
 		for piece in generated:
 			_check(Geometry2D.triangulate_polygon(piece.outline).size() >= 3, "seed %d piece %d triangulates" % [test_seed, piece.piece_id])
-	var large := PuzzleGenerator.generate(game.source, 40, 25, 52900, game.BOARD_SIZE)
+	var large := PuzzleGenerator.generate(game.session.source, 40, 25, 52900, PuzzleCatalog.BOARD_SIZE)
 	_check(large.size() == 1000, "generator supports 1000 stable IDs")
 	for piece in large:
 		_check(Geometry2D.triangulate_polygon(piece.outline).size() >= 3, "1000 piece geometry %d triangulates" % piece.piece_id)
@@ -208,7 +208,7 @@ func _run() -> void:
 	root.content_scale_size = Vector2i(800, 600)
 	await process_frame
 	_check(game.bank.header_scroll.size.x < 800, "bank controls fit narrow viewport with horizontal scroll")
-	_check(game.reference_panel.size.x <= 800, "reference panel fits narrow viewport")
+	_check(game.reference.panel.size.x <= 800, "reference panel fits narrow viewport")
 	if failures == 0:
 		print("SMOKE TEST PASSED: free clusters, wrong/close edge checks, group drag/spread/rotation/bridging/completion, ownership locking, 24/48/96 geometry and bank")
 	quit(0 if failures == 0 else 1)

@@ -54,19 +54,19 @@ func _run() -> void:
 	# Rotation: four quarter turns restore everything, and lighting never rotates with the piece.
 	var game = load("res://scenes/main.tscn").instantiate()
 	root.add_child(game)
-	game._hide_lobby()
+	game.lobby.hide_menu()
 	SaveManager.save_dir = "user://test_saves"
-	game._new_session(true)
+	game.session.new_session(true)
 	await process_frame
 	for id in [0, 5, 100]:
-		game._place_bank_piece(id, Vector2(-200 + id, 50))
+		game.input_controller.place_bank_piece(id, Vector2(-200 + id, 50))
 	var piece: PuzzlePieceState = game.manager.get_piece(5)
 	var start_position := piece.current_position
 	var start_rotation := piece.current_rotation
-	var view: PuzzlePieceView = game.table_views[5]
+	var view: PuzzlePieceView = game.board.views[5]
 	for turn in range(4):
-		game._select_table_piece(5)
-		game._rotate_selected()
+		game.board.select(5)
+		game.input_controller.rotate_selected()
 		var shadow_world: Vector2 = view.shadow.position.rotated(view.rotation)
 		_check(shadow_world.distance_to(PuzzlePieceView.SHADOW_OFFSET) < 0.01, "shadow direction stays fixed in the world after turn %d" % turn)
 		_check(is_equal_approx(view.rotation_degrees, piece.current_rotation) or is_equal_approx(fposmod(view.rotation_degrees, 360.0), float(piece.current_rotation)), "view matches state rotation")
@@ -77,10 +77,10 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	var centre: Vector2 = game.get_viewport().get_canvas_transform() * (piece.current_position + piece.piece_size * 0.5)
-	game._update_table_hover(centre)
-	_check(game.preview_panel.visible and game.hover_table_id == 5, "hovering a board piece shows its enlarged preview")
-	game._update_table_hover(Vector2(5, 300))
-	_check(not game.preview_panel.visible and game.hover_table_id == -1, "moving off the piece hides the preview")
+	game.input_controller.update_table_hover(centre)
+	_check(game.input_controller.preview_panel.visible and game.input_controller.hover_table_id == 5, "hovering a board piece shows its enlarged preview")
+	game.input_controller.update_table_hover(Vector2(5, 300))
+	_check(not game.input_controller.preview_panel.visible and game.input_controller.hover_table_id == -1, "moving off the piece hides the preview")
 	for entry in SaveManager.list_saves():
 		SaveManager.delete_slot(entry.slot)
 	# Left-dragging empty table pans the camera.
@@ -88,13 +88,13 @@ func _run() -> void:
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
 	click.position = Vector2(5, 300)
-	game._handle_mouse_button(click)
-	_check(game.mouse_panning, "left click on empty table starts a camera pan")
+	game.input_controller.handle_mouse_button(click)
+	_check(game.input_controller.mouse_panning, "left click on empty table starts a camera pan")
 	click.pressed = false
-	game._handle_mouse_button(click)
-	_check(not game.mouse_panning, "releasing stops the pan")
+	game.input_controller.handle_mouse_button(click)
+	_check(not game.input_controller.mouse_panning, "releasing stops the pan")
 	# Joined pieces merge visually: no seam lines on joined sides, art grown to overlap.
-	var fresh := PuzzleGenerator.generate(game.source, 8, 6, 5, game.board_size)
+	var fresh := PuzzleGenerator.generate(game.session.source, 8, 6, 5, game.session.board_size)
 	var joined_manager := PuzzleManager.new()
 	joined_manager.configure(fresh, Vector2(10, 10), 8, 6)
 	for id in [9, 10]:
@@ -106,7 +106,7 @@ func _run() -> void:
 	var seam_view := PuzzlePieceView.new()
 	seam_view.manager = joined_manager
 	seam_view.table_mode = true
-	seam_view.setup(fresh[9], game.source, fresh[9].piece_size)
+	seam_view.setup(fresh[9], game.session.source, fresh[9].piece_size)
 	seam_view.refresh_seams()
 	_check(joined_manager.is_joined_side(9, 1) and seam_view.joined_mask == 1 << 1, "piece knows its right side is joined")
 	_check(PuzzlePieceView._polygon_area(seam_view.art.polygon) > PuzzlePieceView._polygon_area(fresh[9].outline), "joined piece art grows to overlap its neighbour")
@@ -119,9 +119,9 @@ func _run() -> void:
 	# top-left positions lands several pixels out of true. Check every joined piece is rigidly aligned.
 	for turns in range(4):
 		var angle := deg_to_rad(90.0 * turns)
-		var rig_pieces := PuzzleGenerator.generate(game.source, 8, 6, 777 + turns, game.board_size, false)
+		var rig_pieces := PuzzleGenerator.generate(game.session.source, 8, 6, 777 + turns, game.session.board_size, false)
 		var rig := PuzzleManager.new()
-		rig.configure(rig_pieces, Vector2(game.board_size.x / 8, game.board_size.y / 6), 8, 6)
+		rig.configure(rig_pieces, Vector2(game.session.board_size.x / 8, game.session.board_size.y / 6), 8, 6)
 		var shift := Vector2(-3000, 2000)
 		var rng := RandomNumberGenerator.new()
 		rng.seed = turns + 1
@@ -144,16 +144,16 @@ func _run() -> void:
 			worst = maxf(worst, drift.distance_to(reference))
 		_check(worst < 0.01, "rotation %d: joined pieces are rigidly aligned (worst error %.3f px)" % [90 * turns, worst])
 	# The hover popup turns with the piece immediately.
-	game._select_table_piece(5)
-	game._update_table_hover(centre)
-	var popup_before: float = game.preview_view.rotation_degrees
-	game._rotate_selected()
-	_check(not is_equal_approx(game.preview_view.rotation_degrees, popup_before) and is_equal_approx(game.preview_view.rotation_degrees, float(piece.current_rotation)), "popup rotates immediately with the piece")
+	game.board.select(5)
+	game.input_controller.update_table_hover(centre)
+	var popup_before: float = game.input_controller.preview_view.rotation_degrees
+	game.input_controller.rotate_selected()
+	_check(not is_equal_approx(game.input_controller.preview_view.rotation_degrees, popup_before) and is_equal_approx(game.input_controller.preview_view.rotation_degrees, float(piece.current_rotation)), "popup rotates immediately with the piece")
 	# Every outline must be a clean, fillable polygon (tabs never fold over or cross each other),
 	# otherwise the artwork shows holes. Also check the grown outline used for joined pieces.
 	for sd in range(1, 31):
 		for grid in [Vector2i(8, 6), Vector2i(18, 14)]:
-			for pc in PuzzleGenerator.generate(game.source, grid.x, grid.y, sd, game.board_size, false):
+			for pc in PuzzleGenerator.generate(game.session.source, grid.x, grid.y, sd, game.session.board_size, false):
 				var tag := "seed %d %dx%d piece %d" % [sd, grid.x, grid.y, pc.piece_id]
 				_check(PuzzleGenerator._is_simple_loop(pc.outline), tag + ": outline does not cross itself")
 				var full := PuzzlePieceView._polygon_area(pc.outline)
@@ -163,9 +163,9 @@ func _run() -> void:
 					filled += PuzzlePieceView._polygon_area(PackedVector2Array([pc.outline[idx[i]], pc.outline[idx[i + 1]], pc.outline[idx[i + 2]]]))
 				_check(absf(filled - full) < full * 0.002, tag + ": artwork fills the whole outline")
 	# Groups from old saves with drifted pieces are pulled back into exact alignment on load.
-	var drift_pieces := PuzzleGenerator.generate(game.source, 8, 6, 31, game.board_size, false)
+	var drift_pieces := PuzzleGenerator.generate(game.session.source, 8, 6, 31, game.session.board_size, false)
 	var drift_manager := PuzzleManager.new()
-	drift_manager.configure(drift_pieces, Vector2(game.board_size.x / 8, game.board_size.y / 6), 8, 6)
+	drift_manager.configure(drift_pieces, Vector2(game.session.board_size.x / 8, game.session.board_size.y / 6), 8, 6)
 	var drift_snaps := []
 	for pc in drift_pieces:
 		var snap := pc.snapshot()
@@ -185,9 +185,9 @@ func _run() -> void:
 	# would fully cover an equal-size piece is nudged aside.
 	var hide_game = load("res://scenes/main.tscn").instantiate()
 	root.add_child(hide_game)
-	hide_game._hide_lobby()
-	hide_game._new_session(false)
-	hide_game._set_rotation_enabled(false)
+	hide_game.lobby.hide_menu()
+	hide_game.session.new_session(false)
+	hide_game.session.set_rotation_enabled(false)
 	await process_frame
 	var hm: PuzzleManager = hide_game.manager
 	hm.request_place_from_bank(0, Vector2(100, 100))
@@ -195,16 +195,16 @@ func _run() -> void:
 	hm.request_pickup(0)
 	hm.request_release(0)
 	hm.request_place_from_bank(30, Vector2(120, 120))
-	hide_game._restack_pieces()
-	var order: Array = hide_game.piece_layer.get_children()
-	var single_index: int = order.find(hide_game.table_views[30])
-	var group_index: int = order.find(hide_game.table_views[0])
+	hide_game.board.restack()
+	var order: Array = hide_game.board.get_children()
+	var single_index: int = order.find(hide_game.board.views[30])
+	var group_index: int = order.find(hide_game.board.views[0])
 	_check(hm.cluster_members(0).size() == 2 and single_index > group_index, "a loose piece is stacked above a larger joined group")
 	hm.request_place_from_bank(31, hm.get_piece(30).current_position)
 	hm.request_pickup(31)
-	hide_game._drop_piece(31)
-	var covered_rect: Rect2 = hide_game._cluster_rect(30)
-	var dropped_rect: Rect2 = hide_game._cluster_rect(31)
+	hide_game.input_controller.drop_piece(31)
+	var covered_rect: Rect2 = hide_game.board.cluster_rect(30)
+	var dropped_rect: Rect2 = hide_game.board.cluster_rect(31)
 	_check(dropped_rect.intersection(covered_rect).get_area() < covered_rect.get_area() * 0.3, "a piece dropped squarely on an equal-size piece is nudged clear of it")
 	# Edge/corner finder highlights only loose pieces of that type.
 	var edge_id := 0
@@ -213,10 +213,10 @@ func _run() -> void:
 		if pc.is_corner_piece and corner_id == 0 and pc.piece_id != 0:
 			corner_id = pc.piece_id
 	hm.request_place_from_bank(corner_id, Vector2(-900, -700))
-	hide_game._set_type_highlight("CORNERS")
-	_check(hide_game.table_views[corner_id].edges.flagged, "hovering CORNERS lights a loose corner piece")
-	_check(not hide_game.table_views[30].edges.flagged, "non-corner pieces are not lit by CORNERS")
-	hide_game._set_type_highlight("")
-	_check(not hide_game.table_views[corner_id].edges.flagged, "highlight clears when the mouse leaves the button")
+	hide_game.board.set_type_highlight("CORNERS")
+	_check(hide_game.board.views[corner_id].edges.flagged, "hovering CORNERS lights a loose corner piece")
+	_check(not hide_game.board.views[30].edges.flagged, "non-corner pieces are not lit by CORNERS")
+	hide_game.board.set_type_highlight("")
+	_check(not hide_game.board.views[corner_id].edges.flagged, "highlight clears when the mouse leaves the button")
 	print("geometry test done, failures: ", failures)
 	quit(1 if failures > 0 else 0)

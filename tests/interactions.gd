@@ -51,9 +51,9 @@ func _run() -> void:
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	var game: Node2D = scene.instantiate()
 	root.add_child(game)
-	game._hide_lobby()
-	game.size_picker.select(1)
-	game._set_rotation_enabled(false)
+	game.lobby.hide_menu()
+	game.session.size_index = 1
+	game.session.set_rotation_enabled(false)
 	await process_frame
 	await process_frame
 	var bank_item: PieceBankItem = game.bank.row.get_child(0)
@@ -61,14 +61,14 @@ func _run() -> void:
 	var bank_point := bank_item.global_position + Vector2(45, 50)
 	_mouse_motion(bank_point)
 	await process_frame
-	_check(game.preview_panel.visible, "hover opens preview")
+	_check(game.input_controller.preview_panel.visible, "hover opens preview")
 	_mouse_motion(Vector2(500, 300))
 	await process_frame
-	_check(not game.preview_panel.visible, "leaving thumbnail closes preview")
+	_check(not game.input_controller.preview_panel.visible, "leaving thumbnail closes preview")
 	_mouse_button(bank_point, true)
 	_mouse_button(bank_point, false)
 	await process_frame
-	_check(game.selected_bank_id == first_id, "click selects bank piece")
+	_check(game.input_controller.selected_bank_id == first_id, "click selects bank piece")
 	var drop_point := Vector2(760, 390)
 	_mouse_button(drop_point, true)
 	_mouse_button(drop_point, false)
@@ -121,7 +121,7 @@ func _run() -> void:
 	_touch(touch_point, true)
 	_touch(touch_point, false)
 	await process_frame
-	_check(game.selected_bank_id == third_id, "touch selects bank piece")
+	_check(game.input_controller.selected_bank_id == third_id, "touch selects bank piece")
 	_touch(Vector2(980, 390), true)
 	_touch(Vector2(980, 390), false)
 	await process_frame
@@ -162,13 +162,13 @@ func _run() -> void:
 	_mouse_button(handle + Vector2(0, -40), false)
 	await process_frame
 	_check(game.bank.bank_height > height_before + 30, "bank grip resizes bank")
-	game._start_puzzle(false)
+	game.session.start_puzzle(false)
 	var group_start := Vector2(430, 300)
-	game._place_bank_piece(0, group_start)
-	game._place_bank_piece(1, group_start + Vector2(game.manager.pieces[0].piece_size.x * game.camera.zoom.x + 3, 0))
+	game.input_controller.place_bank_piece(0, group_start)
+	game.input_controller.place_bank_piece(1, group_start + Vector2(game.manager.pieces[0].piece_size.x * game.camera.zoom.x + 3, 0))
 	await process_frame
 	_check(game.manager.cluster_members(0).size() == 2, "two bank pieces join away from board target")
-	_check(game.table_views[0].selected and game.table_views[1].selected, "joined group selection is visible")
+	_check(game.board.views[0].selected and game.board.views[1].selected, "joined group selection is visible")
 	var group_before: Vector2 = game.manager.pieces[0].current_position
 	var member_before: Vector2 = game.manager.pieces[1].current_position
 	var group_grab: Vector2 = game.get_viewport().get_canvas_transform() * (member_before + game.manager.pieces[1].piece_size * 0.5)
@@ -207,7 +207,7 @@ func _run() -> void:
 	_touch(swipe_start + Vector2(-120, 0), false)
 	await process_frame
 	_check(game.bank.scroll.scroll_horizontal > 60, "sideways swipe scrolls the bank")
-	_check(not game.manager.pieces[swipe_item.piece_id].is_on_table and game.selected_bank_id == -1, "bank swipe neither places nor selects a piece")
+	_check(not game.manager.pieces[swipe_item.piece_id].is_on_table and game.input_controller.selected_bank_id == -1, "bank swipe neither places nor selects a piece")
 	var touch_height_before: float = game.bank.bank_height
 	var touch_grip := Vector2(game.get_viewport_rect().size.x * 0.5 + 30, game.bank.position.y - 5)
 	_touch(touch_grip, true)
@@ -215,11 +215,11 @@ func _run() -> void:
 	_touch(touch_grip + Vector2(0, 40), false)
 	await process_frame
 	_check(game.bank.bank_height < touch_height_before - 30, "touch on bank grip resizes bank")
-	game._set_rotation_enabled(true)
+	game.session.set_rotation_enabled(true)
 	await process_frame
 	var tap_point := Vector2(700, 300)
-	game._place_bank_piece(game.bank.row.get_child(0).piece_id, tap_point)
-	var tap_id: int = game.selected_table_id
+	game.input_controller.place_bank_piece(game.bank.row.get_child(0).piece_id, tap_point)
+	var tap_id: int = game.board.selected_id
 	var rotation_before: int = game.manager.pieces[tap_id].current_rotation
 	var tap_grab: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[tap_id].current_position + game.manager.pieces[tap_id].piece_size * 0.5)
 	_touch(tap_grab, true)

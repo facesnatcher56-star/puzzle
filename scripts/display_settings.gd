@@ -2,6 +2,8 @@ class_name DisplaySettings
 extends RefCounted
 
 const PATH := "user://settings.cfg"
+# Cached copy of the vibration setting so snaps never read the file; set at startup and when toggled.
+static var vibration_enabled := true
 const RESOLUTIONS := [
 	Vector2i(1280, 720), Vector2i(1366, 768), Vector2i(1600, 900), Vector2i(1920, 1080),
 	Vector2i(2560, 1440), Vector2i(3440, 1440), Vector2i(3840, 2160)
@@ -81,6 +83,7 @@ static func load_vibration() -> bool:
 	return bool(config.get_value("audio", "vibration", true))
 
 static func save_vibration(value: bool) -> void:
+	vibration_enabled = value
 	var config := ConfigFile.new()
 	config.load(PATH)
 	config.set_value("audio", "vibration", value)
