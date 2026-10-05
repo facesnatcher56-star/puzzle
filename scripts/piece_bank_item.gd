@@ -8,7 +8,6 @@ signal pressed(piece_id: int, screen_position: Vector2)
 var piece_id: int
 var view: PuzzlePieceView
 var active := false
-var pulsed := false
 
 func setup(piece: PuzzlePieceState, source: Texture2D, cell: Vector2) -> void:
 	piece_id = piece.piece_id
@@ -27,16 +26,10 @@ func set_active(value: bool) -> void:
 	active = value
 	queue_redraw()
 
-func set_pulsed(value: bool) -> void:
-	pulsed = value
-	queue_redraw()
-
 func _draw() -> void:
 	var bg := Color("43505a") if active else Color("303c45")
-	if pulsed:
-		bg = Color("315e5d")
 	draw_rect(Rect2(Vector2(3, 3), size - Vector2(6, 6)), bg, true)
-	draw_rect(Rect2(Vector2(3, 3), size - Vector2(6, 6)), Color("9dffe5") if pulsed else (Color("ddb96c") if active else Color("52616b")), false, 2.5 if pulsed else 1.5)
+	draw_rect(Rect2(Vector2(3, 3), size - Vector2(6, 6)), Color("ddb96c") if active else Color("52616b"), false, 1.5)
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.device == InputEvent.DEVICE_ID_EMULATION:

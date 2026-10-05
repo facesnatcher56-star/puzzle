@@ -21,9 +21,13 @@ var row: HBoxContainer
 var header_scroll: ScrollContainer
 var header: HBoxContainer
 var count_label: Label
-var placed_label: Label
-var buttons := {}
-var pulse_ids := {}
+var buttons := {} # "filter:ALL", "filter:EDGES", "filter:CORNERS", "filter:TRAY 1" and "collapse"
+var tools_button: MenuButton
+var tools_menu: PopupMenu
+
+# The less-used actions live behind the "⋯" button. Menu item id -> the action it requests.
+const TOOLS := [["reference", "Reference"], ["spread", "Spread Pieces"], ["assign_tray", "Move to Tray"], ["reset", "Restart"], ["new", "New Puzzle"]]
+const FILTERS := [["ALL", "ALL"], ["EDGES", "EDGE"], ["CORNERS", "CORNER"], ["TRAY 1", "TRAY 1"]]
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -38,20 +42,15 @@ func _ready() -> void:
 	header = HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	header_scroll.add_child(header)
-	for label in ["ALL", "EDGES", "CORNERS", "TRAY 1"]:
-		_add_button(label, "filter:" + label)
-	_add_button("TO TRAY 1", "assign_tray")
-	_add_button("SPREAD PIECES", "spread")
-	_add_button("RESET", "reset")
-	_add_button("NEW", "new")
-	_add_button("REFERENCE", "reference")
-	_add_button("▾ BANK", "collapse")
+	for entry in FILTERS:
+		_add_button(entry[1], "filter:" + entry[0])
 	count_label = Label.new()
 	count_label.add_theme_color_override("font_color", Color("dce7e6"))
+	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	count_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(count_label)
-	placed_label = Label.new()
-	placed_label.add_theme_color_override("font_color", Color("a6b9b9"))
-	header.add_child(placed_label)
+	_add_tools_menu()
+	_add_button("▾", "collapse")
 	scroll = ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -62,11 +61,35 @@ func _ready() -> void:
 	resized.connect(_layout)
 	_layout()
 
+func _add_tools_menu() -> void:
+	tools_button = MenuButton.new()
+	tools_button.text = "⋯"
+	tools_button.focus_mode = Control.FOCUS_NONE
+	tools_button.custom_minimum_size = Vector2(44, 34)
+	tools_button.add_theme_font_size_override("font_size", 18)
+	tools_menu = tools_button.get_popup()
+	for i in range(TOOLS.size()):
+		tools_menu.add_item(TOOLS[i][1], i)
+	tools_menu.id_pressed.connect(func(id: int): action_requested.emit(TOOLS[id][0]))
+	header.add_child(tools_button)
+
+# Greys out a tool in the "⋯" menu (e.g. Reference in Random mode, which has no reference picture).
+func set_tool_enabled(action: String, enabled: bool) -> void:
+	for i in range(TOOLS.size()):
+		if TOOLS[i][0] == action:
+			tools_menu.set_item_disabled(i, not enabled)
+
+func is_tool_enabled(action: String) -> bool:
+	for i in range(TOOLS.size()):
+		if TOOLS[i][0] == action:
+			return not tools_menu.is_item_disabled(i)
+	return false
+
 func _add_button(label: String, action: String) -> void:
 	var button := Button.new()
 	button.text = label
 	button.focus_mode = Control.FOCUS_NONE
-	button.custom_minimum_size.y = 30
+	button.custom_minimum_size = Vector2(44, 34)
 	button.add_theme_font_size_override("font_size", 13)
 	button.pressed.connect(func(): action_requested.emit(action))
 	button.mouse_entered.connect(func(): action_hovered.emit(action))
@@ -105,7 +128,7 @@ func set_height(value: float) -> void:
 func toggle_collapsed() -> void:
 	collapsed = not collapsed
 	bank_height = 50 if collapsed else expanded_height
-	buttons["collapse"].text = "▴ BANK" if collapsed else "▾ BANK"
+	buttons["collapse"].text = "▴" if collapsed else "▾"
 	_apply_height()
 	_layout()
 
@@ -124,23 +147,7 @@ func configure(states: Array[PuzzlePieceState], image: Texture2D, seed_value: in
 		display_order[swap_index] = temporary
 	selected_id = -1
 	filter_name = "ALL"
-	pulse_ids.clear()
 	refresh()
-
-func set_pulse_highlight(ids: Array) -> void:
-	pulse_ids.clear()
-	for id in ids:
-		pulse_ids[int(id)] = true
-	for item in row.get_children():
-		(item as PieceBankItem).set_pulsed(pulse_ids.has(item.piece_id))
-
-func reveal_first_pulse_item() -> void:
-	if collapsed:
-		toggle_collapsed()
-	for item in row.get_children():
-		if pulse_ids.has(item.piece_id):
-			scroll.ensure_control_visible(item)
-			return
 
 func set_filter(value: String) -> void:
 	filter_name = value
@@ -165,28 +172,19 @@ func refresh() -> void:
 		row.add_child(item)
 		item.setup(piece, source, piece.piece_size)
 		item.set_active(piece.piece_id == selected_id)
-		item.set_pulsed(pulse_ids.has(piece_id))
 		item.hovered.connect(func(id: int, pos: Vector2): piece_hovered.emit(id, pos))
 		item.unhovered.connect(func(id: int): piece_unhovered.emit(id))
 		item.pressed.connect(func(id: int, pos: Vector2): piece_pressed.emit(id, pos))
 	update_counts()
-	for name in ["ALL", "EDGES", "CORNERS", "TRAY 1"]:
-		buttons["filter:" + name].modulate = Color("f3dba4") if filter_name == name else Color.WHITE
+	for entry in FILTERS:
+		buttons["filter:" + entry[0]].modulate = Color("f3dba4") if filter_name == entry[0] else Color.WHITE
 
 func update_counts() -> void:
 	var remaining := 0
-	var placed := 0
-	var group_sizes := {}
-	var largest_group := 0
 	for piece in pieces:
 		if not piece.is_on_table:
 			remaining += 1
-		else:
-			placed += 1
-			group_sizes[piece.cluster_id] = group_sizes.get(piece.cluster_id, 0) + 1
-			largest_group = maxi(largest_group, group_sizes[piece.cluster_id])
-	count_label.text = "  Remaining %d" % remaining
-	placed_label.text = "  Placed %d / %d  •  Largest group %d" % [placed, pieces.size(), largest_group]
+	count_label.text = "  %d remaining" % remaining
 
 func _passes_filter(piece: PuzzlePieceState) -> bool:
 	match filter_name:

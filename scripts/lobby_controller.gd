@@ -262,10 +262,29 @@ func _build_pause_root() -> void:
 	_pause_save_button = null
 	if not network.is_client():
 		_pause_save_button = _button("Save Game", "", _on_save_pressed)
+	if not network.is_client():
+		var grid: Vector2i = session.sizes[session.size_index]
+		_button("Piece Count", "%d pieces" % (grid.x * grid.y), _build_piece_count)
 	_button("Settings", "", _build_settings)
 	_button("Main Menu", "", func(): main_menu_requested.emit())
 	if not OS.has_feature("mobile"):
 		_button("Quit Game", "", _on_quit_pressed)
+
+# Changing the piece count starts the same picture over at the new size, so it is a choice made here, off the
+# live screen, not a control that sits in the HUD.
+func _build_piece_count() -> void:
+	_begin_screen(true)
+	_heading("PIECE COUNT", "Starts this puzzle over at the new size")
+	for i in range(session.sizes.size()):
+		var grid: Vector2i = session.sizes[i]
+		var current := i == session.size_index
+		var button := _button("%d pieces" % (grid.x * grid.y), "Current size" if current else "%d × %d" % [grid.x, grid.y], func():
+			session.size_index = i
+			hide_menu()
+			session.start_puzzle(false))
+		if current:
+			button.modulate = Color("f3dba4")
+	_back_button()
 
 func _on_save_pressed() -> void:
 	session.write_save()

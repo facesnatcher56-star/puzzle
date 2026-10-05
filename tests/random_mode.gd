@@ -20,7 +20,7 @@ func _run() -> void:
 	_check(PuzzleCatalog.RANDOM_IMAGES.has(game.session.image_id), "random mode picks one of the bundled images")
 	_check(game.session.board_size == game.session.source.get_size(), "board matches the picked image")
 	_check(game.manager.pieces.size() == 252, "default random puzzle has 252 pieces")
-	_check(not game.bank.buttons["reference"].visible, "reference button hidden")
+	_check(not game.bank.is_tool_enabled("reference"), "reference tool unavailable in random mode")
 	game.input_controller.on_bank_action("reference")
 	_check(not game.reference.visible, "reference window cannot open")
 	var seen := {}
@@ -43,7 +43,7 @@ func _run() -> void:
 	game.session.new_session(false)
 	_check(game.session.image_id == "" and game.session.source.get_size() == Vector2(1122, 1402), "classic mode is unaffected")
 	_check(game.session.save_slot != slot, "a new game gets a new slot")
-	_check(game.bank.buttons["reference"].visible, "reference returns in classic mode")
+	_check(game.bank.is_tool_enabled("reference"), "reference returns in classic mode")
 	_check(SaveManager.list_saves().size() == 2, "both puzzles are listed")
 	_check(game.session.load_session(slot), "loading a saved slot succeeds")
 	_check(game.session.image_id == saved_id and game.session.save_slot == slot, "load restores the image and keeps autosaving into the same slot")

@@ -231,24 +231,6 @@ func anchored_corner_count() -> int:
 			count += 1
 	return count
 
-func edge_pulse_targets(limit: int = 6) -> Array:
-	var immediate := []
-	var remaining := []
-	for piece in pieces:
-		if not piece.is_edge_piece or piece.is_corner_piece or piece.is_locked or _group_is_held(piece):
-			continue
-		var useful := false
-		for side in range(4):
-			var neighbor_id := _correct_neighbor(piece, side)
-			if neighbor_id >= 0 and pieces[neighbor_id].is_locked:
-				useful = true
-				break
-		if useful:
-			immediate.append(piece.piece_id)
-		else:
-			remaining.append(piece.piece_id)
-	return (immediate + remaining).slice(0, maxi(0, limit))
-
 # Names of the border sides this group fully contains ("TOP", "BOTTOM", "LEFT", "RIGHT").
 func complete_sides(member_ids: Array) -> Array:
 	var have := {}
@@ -334,6 +316,94 @@ func strike_piece(piece_id: int) -> Array:
 		bank_changed.emit()
 	snap_piece(piece_id, ConnectionSource.POWER)
 	return moved
+
+# --- Cluster Surge ---
+# The player's own power: pull the correct neighbours of a chosen group onto it. Unlike Lightning and Magnet,
+# which put things where they belong on the board, a Surge joins neighbours to the group *where it sits* -- a
+# loose island grows in place -- and when the group is part of the main puzzle that is the same thing as the
+# neighbour's true place on the board.
+
+# The neighbours a Surge on `piece_id`'s group could pull: one entry per neighbouring group that is outside the
+# main puzzle and not held, as {piece, member, side} -- `piece` is the neighbour touching `member`'s `side`.
+func surge_targets(piece_id: int) -> Array:
+	var piece := get_piece(piece_id)
+	if piece == null or not piece.is_on_table:
+		return []
+	var group := cluster_members(piece_id)
+	var seen := {}
+	var found := []
+	for member_id in group:
+		var member: PuzzlePieceState = pieces[member_id]
+		for side in range(4):
+			var neighbor_id := _correct_neighbor(member, side)
+			if neighbor_id < 0:
+				continue
+			var neighbor: PuzzlePieceState = pieces[neighbor_id]
+			if neighbor.is_locked or _group_is_held(neighbor):
+				continue
+			if neighbor.is_on_table and neighbor.cluster_id == member.cluster_id:
+				continue
+			var key := _group_key(neighbor)
+			if seen.has(key):
+				continue
+			seen[key] = true
+			found.append({"piece": neighbor_id, "member": member_id, "side": side})
+	return found
+
+# The edges of the group where a Surge could pull something in, as world-space polylines (for a faint preview).
+func surge_seams(piece_id: int) -> Array:
+	var seams := []
+	for target in surge_targets(piece_id):
+		seams.append(world_edge(pieces[target.member], target.side))
+	return seams
+
+# Brings the neighbour `target_id` onto `anchor_id`'s group: the neighbour's whole group (or the lone piece, fetched
+# from the bank) is turned to match, slid so that it sits exactly beside the anchor's group, and joined to it.
+# Returns the ids of the pieces that moved (empty if the neighbour is not eligible any more).
+func pull_to_group(target_id: int, anchor_id: int) -> Array:
+	var target := get_piece(target_id)
+	var anchor := get_piece(anchor_id)
+	if target == null or anchor == null or target.is_locked or not anchor.is_on_table:
+		return []
+	if target.is_on_table and target.cluster_id == anchor.cluster_id:
+		return []
+	# the member of the anchor's group that touches the target on the board
+	var touching := -1
+	for member_id in cluster_members(anchor_id):
+		for side in range(4):
+			if _correct_neighbor(pieces[member_id], side) == target_id:
+				touching = member_id
+	if touching < 0:
+		return []
+	if anchor.is_locked:
+		return strike_piece(target_id)
+	var base: PuzzlePieceState = pieces[touching]
+	var from_bank := not target.is_on_table
+	var moved: Array
+	if from_bank:
+		target.is_on_table = true
+		target.cluster_id = target_id
+		clusters[target_id] = [target_id]
+		target.current_rotation = base.current_rotation
+		moved = [target_id]
+	else:
+		moved = cluster_members(target_id).duplicate()
+		while target.current_rotation != base.current_rotation:
+			_rotate_group(moved)
+	var wanted_centre := base.current_position + base.piece_size * 0.5 + ((target.correct_position + target.piece_size * 0.5) - (base.correct_position + base.piece_size * 0.5)).rotated(deg_to_rad(base.current_rotation))
+	var offset := wanted_centre - (target.current_position + target.piece_size * 0.5)
+	for member_id in moved:
+		var member: PuzzlePieceState = pieces[member_id]
+		member.current_position += offset
+		member.owner_peer_id = 0
+		piece_changed.emit(member_id)
+	if from_bank:
+		bank_changed.emit()
+	snap_piece(target_id, ConnectionSource.POWER)
+	return moved
+
+func world_edge(piece: PuzzlePieceState, side: int) -> PackedVector2Array:
+	return _world_edge(piece, side)
 
 func _group_key(piece: PuzzlePieceState) -> int:
 	return piece.cluster_id if piece.is_on_table and piece.cluster_id >= 0 else -1 - piece.piece_id

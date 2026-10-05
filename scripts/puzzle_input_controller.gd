@@ -16,6 +16,7 @@ var reference: ReferenceWindow
 var completion: CompletionController
 var sfx: Sfx
 var ui_root: Control
+var ability_bar: AbilityBar
 
 # gesture in progress
 var dragging_table_id := -1
@@ -108,7 +109,10 @@ func _viewport_size() -> Vector2:
 	return get_viewport().get_visible_rect().size
 
 func is_table_screen(screen_position: Vector2) -> bool:
-	return screen_position.y > 53 and screen_position.y < _viewport_size().y - bank.bank_height
+	if screen_position.y <= GameHud.HEIGHT or screen_position.y >= _viewport_size().y - bank.bank_height:
+		return false
+	# the ability bar floats over the bottom of the table; presses on it belong to it
+	return ability_bar == null or not ability_bar.get_global_rect().has_point(screen_position)
 
 func screen_to_world(screen_position: Vector2) -> Vector2:
 	return get_viewport().get_canvas_transform().affine_inverse() * screen_position
@@ -127,6 +131,8 @@ func handle_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
 			rotate_selected()
+		elif event.keycode >= KEY_1 and event.keycode <= KEY_4 and ability_bar != null:
+			ability_bar.trigger_slot(event.keycode - KEY_1)
 	if event is InputEventMagnifyGesture:
 		zoom_at(event.position, event.factor)
 		return
@@ -196,6 +202,9 @@ func handle_mouse_button(event: InputEventMouseButton) -> void:
 		return
 	var world := screen_to_world(event.position)
 	var picked := board.pick(world)
+	if ability_bar != null and ability_bar.is_targeting():
+		ability_bar.complete_targeting(picked) # the click chooses the power's target instead of picking anything up
+		return
 	board.select(picked)
 	if picked >= 0 and network.request_pickup(picked):
 		sfx.pickup()
@@ -206,8 +215,7 @@ func handle_mouse_button(event: InputEventMouseButton) -> void:
 		board.bring_cluster_forward(picked)
 	elif picked < 0 or manager.is_locked(picked):
 		mouse_panning = true # left-dragging empty table (or the locked board) moves the camera
-		if picked >= 0:
-			board.select(-1)
+		# (a locked section stays selected, so a power can be aimed at the main puzzle)
 
 func handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if reference.handle_mouse_motion(event):
@@ -251,6 +259,9 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 			return
 		var world := screen_to_world(event.position)
 		var picked := board.pick(world)
+		if ability_bar != null and ability_bar.is_targeting():
+			ability_bar.complete_targeting(picked)
+			return
 		board.select(picked)
 		if event.double_tap and picked >= 0:
 			rotate_selected()

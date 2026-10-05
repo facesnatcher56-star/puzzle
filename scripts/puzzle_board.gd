@@ -15,7 +15,6 @@ var network: NetworkSession
 var views := {} # piece id -> PuzzlePieceView for every piece on the table
 var selected_id := -1
 var highlight_kind := "" # "EDGES" or "CORNERS" while that bank button is hovered/pressed
-var pulse_ids := {}
 
 # Pieces whose next update should glide to their new place instead of jumping there (lightning).
 const GLIDE_LEAD_MSEC := 2500 # how long before the move a glide is announced, at the most
@@ -44,7 +43,6 @@ func clear() -> void:
 	_glide_until.clear()
 	_bank_glide.clear()
 	_glide_tweens.clear()
-	pulse_ids.clear()
 
 # --- keeping views in step with the manager ---
 
@@ -79,7 +77,7 @@ func on_piece_changed(piece_id: int) -> void:
 		view.pulse(0.2) # a piece fetched from the bank has nowhere to fly from, so it swells into place
 	views[piece_id].refresh_seams()
 	views[piece_id].set_locked(piece.is_locked)
-	if highlight_kind != "" or not pulse_ids.is_empty():
+	if highlight_kind != "":
 		refresh_type_highlight()
 
 # Lets the next update of each of these pieces glide to its new place. Called just before they move.
@@ -250,14 +248,8 @@ func set_type_highlight(kind: String) -> void:
 	highlight_kind = kind
 	refresh_type_highlight()
 
-func set_pulse_highlight(ids: Array) -> void:
-	pulse_ids.clear()
-	for id in ids:
-		pulse_ids[int(id)] = true
-	refresh_type_highlight()
-
 func refresh_type_highlight() -> void:
 	for piece_id in views:
 		var piece := manager.get_piece(piece_id)
-		var lit := pulse_ids.has(piece_id) or (highlight_kind != "" and piece != null and manager.cluster_members(piece_id).size() == 1 and (piece.is_corner_piece if highlight_kind == "CORNERS" else piece.is_edge_piece))
+		var lit := (highlight_kind != "" and piece != null and manager.cluster_members(piece_id).size() == 1 and (piece.is_corner_piece if highlight_kind == "CORNERS" else piece.is_edge_piece))
 		views[piece_id].set_flagged(lit)

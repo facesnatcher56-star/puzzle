@@ -33,10 +33,9 @@ var seed_value := 52813
 # unrotated start.
 var random_rotation := true
 
-# The Lightning Zone of the running puzzle (null for a save from before zones existed). It is part of the
-# puzzle's configuration, so it is saved, and sent to joining players, with the rest of it.
-var lightning_zone: LightningZone
-var magnet_zone: MagnetZone
+# The board-power zones of the running puzzle (empty for a save from before zones existed). They are part of the
+# puzzle's configuration, so they are saved, and sent to joining players, with the rest of it.
+var power_zones: Array = []
 
 var save_slot := "" # file slot the running puzzle autosaves into; "" while a client (clients never save)
 var save_dirty := false
@@ -111,8 +110,7 @@ func start_puzzle(new_seed: bool) -> void:
 	scoring.reset()
 	var zone_rng := RandomNumberGenerator.new()
 	zone_rng.randomize()
-	lightning_zone = LightningZone.random(columns, rows, zone_rng)
-	magnet_zone = MagnetZone.random(columns, rows, zone_rng, lightning_zone)
+	power_zones = PowerLayout.generate(columns, rows, zone_rng)
 	puzzle_started.emit(generated)
 	if network.is_host():
 		network.broadcast_full_state()
@@ -140,10 +138,7 @@ func restore_puzzle(saved: Dictionary) -> void:
 		return
 	manager.configure(generated, cell, columns, rows)
 	scoring.from_dict(saved.get("scoring", {}) if saved.get("scoring", {}) is Dictionary else {})
-	var saved_zone = saved.get("lightning", {})
-	lightning_zone = LightningZone.from_dict(saved_zone, columns, rows) if typeof(saved_zone) == TYPE_DICTIONARY else null
-	var saved_magnet = saved.get("magnet", {})
-	magnet_zone = MagnetZone.from_dict(saved_magnet, columns, rows) if typeof(saved_magnet) == TYPE_DICTIONARY else null
+	power_zones = PowerZone.zones_from_save(saved, columns, rows)
 	restoring = true
 	manager.apply_snapshots(saved.pieces) # emits piece_changed for every piece; the board creates each on-table view reactively
 	restoring = false
@@ -175,10 +170,7 @@ func puzzle_config() -> Dictionary:
 		"rotation_enabled": true, "image_id": image_id, # key kept so saves stay readable by older builds
 		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
 	}
-	if lightning_zone != null:
-		config["lightning"] = lightning_zone.to_dict()
-	if magnet_zone != null:
-		config["magnet"] = magnet_zone.to_dict()
+	config["zones"] = PowerZone.list_to_data(power_zones)
 	config["scoring"] = scoring.to_dict()
 	return config
 

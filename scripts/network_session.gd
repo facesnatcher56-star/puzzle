@@ -22,14 +22,14 @@ signal server_disconnected
 signal peer_joined(peer_id: int)
 signal peer_left(peer_id: int)
 signal full_state_received(config: Dictionary, snapshots: Array)
-# Lightning is decided by the host alone; these tell a client what the host did so it can show the same thing.
-signal lightning_activated_received
-signal lightning_strike_received(piece_id: int, member_ids: Array)
-signal magnet_activated_received
-signal magnet_pull_received(piece_id: int, member_ids: Array)
+# Board powers are decided by the host alone; these tell a client what the host did so it can show the same thing.
+signal zone_activated_received(zone_index: int)
+signal zone_strike_received(zone_index: int, piece_id: int, member_ids: Array)
+# Cluster Surge: a client asks the host, and the host tells everyone what it did.
+signal surge_requested(piece_id: int, peer_id: int)
+signal surge_started_received(piece_id: int, member_ids: Array)
+signal surge_pull_received(anchor_id: int, piece_id: int, member_ids: Array)
 signal scoring_sync_received(state: Dictionary, event: Dictionary)
-signal edge_pulse_requested
-signal edge_pulse_received(piece_ids: Array)
 
 enum Mode { SOLO, HOST, CLIENT }
 
@@ -174,39 +174,36 @@ func announce_scoring(state: Dictionary, event: Dictionary) -> void:
 	if is_host():
 		_sync_scoring.rpc(state, event)
 
-func request_edge_pulse() -> void:
+# --- Cluster Surge ---
+
+# A client asks the host to spend a Power Charge on the group containing `piece_id`; the host decides.
+func request_surge(piece_id: int) -> void:
 	if is_client():
-		_rpc_request_edge_pulse.rpc_id(1)
+		_rpc_request_surge.rpc_id(1, piece_id)
 
-func announce_edge_pulse(piece_ids: Array) -> void:
+func announce_surge_started(piece_id: int, member_ids: Array) -> void:
 	if is_host():
-		_sync_edge_pulse.rpc(piece_ids)
+		_sync_surge_started.rpc(piece_id, member_ids)
 
-# --- Lightning (host only; clients just watch) ---
-
-func announce_lightning_activated() -> void:
+func announce_surge_pull(anchor_id: int, piece_id: int, member_ids: Array) -> void:
 	if is_host():
-		_sync_lightning_activated.rpc()
+		_sync_surge_pull.rpc(anchor_id, piece_id, member_ids)
 
-func announce_lightning_strike(piece_id: int, member_ids: Array) -> void:
+# --- Board powers (host only; clients just watch) ---
+
+func announce_zone_activated(zone_index: int) -> void:
 	if is_host():
-		_sync_lightning_strike.rpc(piece_id, member_ids)
+		_sync_zone_activated.rpc(zone_index)
 
-# Sends the final state of the struck group (which by now includes whatever it joined) to every peer.
-func broadcast_lightning_result(piece_id: int) -> void:
-	broadcast_power_result(piece_id)
+# A Lightning strike or a Magnet pull is about to put `piece_id`'s group in place.
+func announce_zone_strike(zone_index: int, piece_id: int, member_ids: Array) -> void:
+	if is_host():
+		_sync_zone_strike.rpc(zone_index, piece_id, member_ids)
 
+# Sends the final state of the moved group (which by now includes whatever it joined) to every peer.
 func broadcast_power_result(piece_id: int) -> void:
 	if is_host():
 		_broadcast_cluster(piece_id)
-
-func announce_magnet_activated() -> void:
-	if is_host():
-		_sync_magnet_activated.rpc()
-
-func announce_magnet_pull(piece_id: int, member_ids: Array) -> void:
-	if is_host():
-		_sync_magnet_pull.rpc(piece_id, member_ids)
 
 # --- Host-side connection lifecycle ---
 
@@ -308,9 +305,9 @@ func _rpc_request_release(piece_id: int, count_failed_attempt: bool = true) -> v
 		_broadcast_cluster(piece_id)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_request_edge_pulse() -> void:
+func _rpc_request_surge(piece_id: int) -> void:
 	if is_host():
-		edge_pulse_requested.emit()
+		surge_requested.emit(piece_id, multiplayer.get_remote_sender_id())
 
 # --- RPCs: host -> peers broadcasts ---
 
@@ -338,28 +335,24 @@ func _sync_completed() -> void:
 	manager.puzzle_completed.emit()
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_lightning_activated() -> void:
-	lightning_activated_received.emit()
+func _sync_surge_started(piece_id: int, member_ids: Array) -> void:
+	surge_started_received.emit(piece_id, member_ids)
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_lightning_strike(piece_id: int, member_ids: Array) -> void:
-	lightning_strike_received.emit(piece_id, member_ids)
+func _sync_surge_pull(anchor_id: int, piece_id: int, member_ids: Array) -> void:
+	surge_pull_received.emit(anchor_id, piece_id, member_ids)
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_magnet_activated() -> void:
-	magnet_activated_received.emit()
+func _sync_zone_activated(zone_index: int) -> void:
+	zone_activated_received.emit(zone_index)
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_magnet_pull(piece_id: int, member_ids: Array) -> void:
-	magnet_pull_received.emit(piece_id, member_ids)
+func _sync_zone_strike(zone_index: int, piece_id: int, member_ids: Array) -> void:
+	zone_strike_received.emit(zone_index, piece_id, member_ids)
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_scoring(state: Dictionary, event: Dictionary) -> void:
 	scoring_sync_received.emit(state, event)
-
-@rpc("authority", "call_remote", "reliable")
-func _sync_edge_pulse(piece_ids: Array) -> void:
-	edge_pulse_received.emit(piece_ids)
 
 @rpc("authority", "call_remote", "reliable")
 func _full_sync(config: Dictionary, snapshots: Array) -> void:

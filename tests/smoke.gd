@@ -129,7 +129,7 @@ func _run() -> void:
 	game.board.spread()
 	_check(first.current_position != position_before_spread, "spread moves a joined group")
 	_check((second.current_position - first.current_position).distance_to(relative_before_spread) < 0.01, "spread preserves group shape")
-	_check(game.bank.placed_label.text.contains("5 / 48"), "placed count updates")
+	_check(game.bank.count_label.text.contains("43 remaining"), "remaining count updates")
 	var old_zoom: float = game.camera.zoom.x
 	var old_ui_position: Vector2 = game.bank.global_position
 	game.input_controller.zoom_at(Vector2(500, 300), 1.2)

@@ -9,9 +9,11 @@ extends Node2D
 #   LobbyController        the main menu, load/collection/host/join/settings and the pause menu
 #   ReferenceWindow        the floating reference picture
 #   CompletionController   snap/lock celebrations, the finale and the Collection entry
-#   LightningController    the Lightning Zone: charging, activation and strikes (LightningView draws them)
-#   MagnetController       the Magnet Zone: fixed perimeter pulls (MagnetView draws them)
-#   EdgePulseController    a Charge-funded search for useful border pieces
+#   PowerController        the Lightning and Magnet zones: charging, the queue they take turns in, strikes and
+#                          pulls (PowerView draws them)
+#   ClusterSurgeController the player's first spendable power (ClusterSurgeView draws it)
+#   GameHud                the thin top strip: score, combo, Charge, stored Power Charges, objective and notices
+#   AbilityBar             the numbered power slots above the piece bank
 
 @onready var camera: Camera2D = $Camera2D
 @onready var board: PuzzleBoard = $Pieces
@@ -28,12 +30,12 @@ var input_controller: PuzzleInputController
 var lobby: LobbyController
 var reference: ReferenceWindow
 var completion: CompletionController
-var lightning: LightningController
-var lightning_view: LightningView
-var magnet: MagnetController
-var magnet_view: MagnetView
-var score_view: RunScoreView
-var edge_pulse: EdgePulseController
+var powers: PowerController
+var power_view: PowerView
+var surge: ClusterSurgeController
+var surge_view: ClusterSurgeView
+var hud: GameHud
+var ability_bar: AbilityBar
 
 var board_glow := 0.0 # golden frame glow during the finale
 
@@ -42,12 +44,6 @@ var ui_root: Control
 var bank: PieceBank
 var complete_banner: PanelContainer
 var complete_label: Label
-var rotation_button: Button
-var size_picker: OptionButton
-var title_label: Label
-var top_hint: Label
-var network_status_label: Label
-var leave_button: Button
 
 func _ready() -> void:
 	DisplayServer.window_set_title("Emberbound Jigsaw  -  build " + BuildInfo.ID)
@@ -95,18 +91,18 @@ func _create_controllers() -> void:
 	completion.fx = fx
 	completion.set_board_glow = Callable(self, "set_board_glow")
 	add_child(completion)
-	lightning = LightningController.new()
-	lightning.setup(session, manager, network)
-	add_child(lightning)
-	lightning_view = LightningView.new()
-	lightning_view.setup(session, manager, board, lightning, fx, sfx)
-	add_child(lightning_view)
-	magnet = MagnetController.new()
-	magnet.setup(session, manager, network)
-	add_child(magnet)
-	magnet_view = MagnetView.new()
-	magnet_view.setup(session, manager, board, magnet, fx, sfx)
-	add_child(magnet_view)
+	powers = PowerController.new()
+	powers.setup(session, manager, network)
+	add_child(powers)
+	power_view = PowerView.new()
+	power_view.setup(session, manager, board, powers, fx, sfx)
+	add_child(power_view)
+	surge = ClusterSurgeController.new()
+	surge.setup(session, manager, network, session.scoring)
+	add_child(surge)
+	surge_view = ClusterSurgeView.new()
+	surge_view.setup(manager, board, surge, fx, sfx)
+	add_child(surge_view)
 	input_controller = PuzzleInputController.new()
 	input_controller.manager = manager
 	input_controller.network = network
@@ -182,15 +178,20 @@ func _input(event: InputEvent) -> void:
 		return
 	input_controller.handle_input(event)
 
-# Escape: close the reference window, step back through a menu, or open the pause menu.
+# Escape: cancel power targeting, close the reference window, step back through a menu, or open the pause menu.
 func _on_escape() -> void:
+	if ability_bar.cancel_targeting():
+		return
 	if reference.is_open():
 		reference.close()
 	elif lobby.is_open():
 		lobby.handle_escape()
 	else:
-		input_controller.release_for_menu()
-		lobby.show_pause_menu()
+		_open_pause_menu()
+
+func _open_pause_menu() -> void:
+	input_controller.release_for_menu()
+	lobby.show_pause_menu()
 
 # --- drawing the board ---
 
@@ -214,20 +215,21 @@ func set_board_glow(value: float) -> void:
 	board_glow = value
 	queue_redraw()
 
+# The table is what is left between the thin top strip and the ability bar and piece bank along the bottom.
 func fit_camera() -> void:
 	var viewport_size := get_viewport_rect().size
 	var board_size := session.board_size
-	var available := Vector2(viewport_size.x - 64, viewport_size.y - bank.bank_height - 85)
+	var bottom := bank.bank_height + AbilityBar.HEIGHT
+	var available := Vector2(viewport_size.x - 64, viewport_size.y - bottom - GameHud.TABLE_TOP - 14)
 	var fit := minf(available.x / board_size.x, available.y / board_size.y)
 	camera.zoom = Vector2.ONE * fit
-	camera.position = Vector2(0, (bank.bank_height - 53) * 0.5 / fit)
+	camera.position = Vector2(0, (bottom - GameHud.TABLE_TOP) * 0.5 / fit)
 
 func _on_viewport_resized() -> void:
 	reference.relayout()
 	# Android settles its immersive window size after launch; refit so the board starts fully visible.
 	if OS.has_feature("mobile"):
 		fit_camera()
-	top_hint.visible = get_viewport_rect().size.x >= 1050
 	input_controller.on_viewport_resized()
 
 # --- building the screen furniture ---
@@ -237,17 +239,14 @@ func _build_screen() -> void:
 	ui_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	ui_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui_layer.add_child(ui_root)
-	_build_top_bar()
 	bank = PieceBank.new()
 	ui_root.add_child(bank)
 	input_controller.attach_ui(ui_root, bank)
-	score_view = RunScoreView.new()
-	score_view.setup(session.scoring, manager, session)
-	ui_root.add_child(score_view)
-	edge_pulse = EdgePulseController.new()
-	edge_pulse.setup(manager, session.scoring, network, board, bank)
-	add_child(edge_pulse)
-	score_view.edge_pulse_requested.connect(edge_pulse.activate)
+	hud = GameHud.new()
+	hud.setup(session.scoring, manager, session)
+	hud.menu_requested.connect(_open_pause_menu)
+	ui_root.add_child(hud)
+	_build_ability_bar()
 	_build_complete_banner()
 	completion.bank = bank
 	completion.banner = complete_banner
@@ -255,63 +254,21 @@ func _build_screen() -> void:
 	ui_root.add_child(reference)
 	ui_root.add_child(lobby) # last, so menus draw above everything else
 
-func _build_top_bar() -> void:
-	var top_bg := ColorRect.new()
-	top_bg.color = Color("17252dcc")
-	top_bg.anchor_right = 1
-	top_bg.offset_bottom = 53
-	top_bg.mouse_filter = Control.MOUSE_FILTER_STOP
-	ui_root.add_child(top_bg)
-	var top := HBoxContainer.new()
-	top.position = Vector2(15, 9)
-	top.anchor_right = 1
-	top.offset_right = -20
-	top.offset_bottom = 36
-	top.add_theme_constant_override("separation", 9)
-	top_bg.add_child(top)
-	title_label = Label.new()
-	title_label.text = "EMBERBOUND JIGSAW"
-	title_label.add_theme_font_size_override("font_size", 19)
-	title_label.add_theme_color_override("font_color", Color("f4e5c3"))
-	title_label.custom_minimum_size.x = 180
-	top.add_child(title_label)
-	var size_label := Label.new()
-	size_label.text = "PIECES"
-	size_label.add_theme_font_size_override("font_size", 12)
-	top.add_child(size_label)
-	size_picker = OptionButton.new()
-	size_picker.focus_mode = Control.FOCUS_NONE
-	_fill_size_picker()
-	size_picker.item_selected.connect(func(index: int):
-		session.size_index = index
-		session.start_puzzle(false))
-	top.add_child(size_picker)
-	rotation_button = Button.new()
-	rotation_button.text = "↻ Rotate (R)"
-	rotation_button.pressed.connect(input_controller.rotate_selected)
-	top.add_child(rotation_button)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(spacer)
-	top_hint = Label.new()
-	top_hint.text = "Match touching edges anywhere  •  Drag joined groups  •  Wheel zoom"
-	if DisplayServer.is_touchscreen_available():
-		top_hint.text = "Pinch to zoom  •  Double-tap to rotate  •  Swipe bank to scroll"
-	top_hint.add_theme_color_override("font_color", Color("b8c8c8"))
-	top_hint.add_theme_font_size_override("font_size", 12)
-	top_hint.visible = get_viewport_rect().size.x >= 1050
-	top.add_child(top_hint)
-	network_status_label = Label.new()
-	network_status_label.text = "SOLO"
-	network_status_label.add_theme_font_size_override("font_size", 12)
-	network_status_label.add_theme_color_override("font_color", Color("9fd6c8"))
-	top.add_child(network_status_label)
-	leave_button = Button.new()
-	leave_button.text = "Leave"
-	leave_button.visible = false
-	leave_button.focus_mode = Control.FOCUS_NONE
-	leave_button.pressed.connect(leave_to_menu)
-	top.add_child(leave_button)
+# The power slots just above the bank, wired to the controller that carries each power out.
+func _build_ability_bar() -> void:
+	ability_bar = AbilityBar.new()
+	ability_bar.selection = func(): return board.selected_id
+	ability_bar.can_use = func(_ability: String, piece_id: int): return surge.can_use(piece_id, network.local_player_id())
+	ability_bar.ability_requested.connect(func(ability: String, piece_id: int):
+		if ability == "cluster_surge":
+			surge.request(piece_id))
+	ability_bar.preview_changed.connect(func(_ability: String, piece_id: int): surge_view.set_preview(piece_id))
+	ability_bar.rotate_requested.connect(input_controller.rotate_selected)
+	ui_root.add_child(ability_bar)
+	input_controller.ability_bar = ability_bar
+	session.scoring.state_changed.connect(func(): ability_bar.set_power_charges(session.scoring.power_charges))
+	bank.resized.connect(func(): ability_bar.reposition(bank.bank_height))
+	ability_bar.reposition(bank.bank_height)
 
 func _build_complete_banner() -> void:
 	complete_banner = PanelContainer.new()
@@ -338,27 +295,18 @@ func _build_complete_banner() -> void:
 	next.pressed.connect(func(): session.start_puzzle(true))
 	complete_row.add_child(next)
 
-func _fill_size_picker() -> void:
-	size_picker.clear()
-	for grid in session.sizes:
-		size_picker.add_item(str(grid.x * grid.y))
-	size_picker.select(session.size_index)
-
 # --- reacting to the session ---
 
 func _on_puzzle_resetting() -> void:
-	if edge_pulse != null:
-		edge_pulse.clear()
+	ability_bar.cancel_targeting()
+	surge_view.set_preview(-1)
 	board.clear()
 	completion.reset()
 	input_controller.reset()
 
 func _on_image_changed(id: String) -> void:
-	var random_mode := id != ""
-	title_label.text = "RANDOM PUZZLE" if random_mode else "EMBERBOUND JIGSAW"
-	_fill_size_picker()
 	reference.set_image(session.source)
-	bank.buttons["reference"].visible = not random_mode # Random mode has no reference picture
+	bank.set_tool_enabled("reference", id == "") # Random mode has no reference picture
 
 func _on_puzzle_started(pieces: Array) -> void:
 	if bank.collapsed:
@@ -369,7 +317,6 @@ func _on_puzzle_started(pieces: Array) -> void:
 	queue_redraw()
 
 func _on_puzzle_restored(pieces: Array) -> void:
-	size_picker.select(session.size_index)
 	completion.remember_cluster_sizes()
 	if bank.collapsed:
 		bank.toggle_collapsed()
@@ -378,7 +325,7 @@ func _on_puzzle_restored(pieces: Array) -> void:
 	if manager.completion_announced:
 		var seconds := manager.elapsed_seconds()
 		complete_label.text = "Puzzle Complete  •  %02d:%02d" % [seconds / 60, seconds % 60]
-	_apply_role_restrictions()
+	_update_network_status()
 	fit_camera()
 	queue_redraw()
 
@@ -407,7 +354,7 @@ func _on_connection_failed(reason: String) -> void:
 
 func _on_server_disconnected() -> void:
 	session.save_dirty = false
-	_apply_role_restrictions()
+	_update_network_status()
 	lobby.show_main_menu()
 	lobby.set_join_status("Disconnected from host.")
 
@@ -418,17 +365,11 @@ func _on_full_state_received(config: Dictionary, snapshots: Array) -> void:
 
 func _update_network_status() -> void:
 	if network.is_host():
-		network_status_label.text = "HOSTING (%d)" % multiplayer.get_peers().size()
-		leave_button.visible = true
+		hud.set_network_status("HOSTING (%d)" % multiplayer.get_peers().size())
 	elif network.is_client():
-		network_status_label.text = "CONNECTED"
-		leave_button.visible = true
+		hud.set_network_status("CONNECTED")
 	else:
-		network_status_label.text = "SOLO"
-		leave_button.visible = false
-	_apply_role_restrictions()
-
-# Only the host (or a solo player) may change the piece count.
-func _apply_role_restrictions() -> void:
-	var editable := not network.is_client()
-	size_picker.disabled = not editable
+		hud.set_network_status("")
+	# Only the host (or a solo player) may reshape the puzzle.
+	for action in ["spread", "reset", "new"]:
+		bank.set_tool_enabled(action, not network.is_client())

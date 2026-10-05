@@ -122,22 +122,21 @@ func _test_power_jackpots() -> void:
 	_place(lightning_rig.manager, [12, 13, 20, 21, 28, 29], Vector2(950, 620))
 	lightning_rig.session.scoring.reset()
 	lightning_rig.awards.clear()
-	var lightning := LightningController.new()
+	var lightning := PowerController.new()
 	root.add_child(lightning)
 	lightning.setup(lightning_rig.session, lightning_rig.manager, lightning_rig.network)
-	lightning_rig.session.lightning_zone = LightningZone.make(8, 6, 0, 0, 2, 2, 1)
+	lightning.make_instant()
 	var moved := lightning.apply_strike(13)
 	_check(moved.size() == 6 and lightning_rig.awards.size() == 1, "Lightning moves six joined pieces in one scoring event")
 	_check(lightning_rig.awards[0].source == PuzzleManager.ConnectionSource.POWER and lightning_rig.awards[0].score_gain == 900 and lightning_rig.awards[0].charge_gain == 8, "Lightning jackpot gets full score and half Charge")
 	_check(lightning_rig.session.scoring.combo_progress == 3 and lightning_rig.manager.is_joined_side(12, 1), "Lightning jackpot raises combo and preserves joins")
 	var magnet_rig := _rig(118)
-	magnet_rig.session.magnet_zone = MagnetZone.make(8, 6, 0, 0, 2, 2)
-	var magnet := MagnetController.new()
+	var magnet_zone := PowerZone.make(8, 6, 0, 0, 2, 2, PowerZone.Kind.MAGNET)
+	magnet_rig.session.power_zones = [magnet_zone]
+	var magnet := PowerController.new()
 	root.add_child(magnet)
 	magnet.setup(magnet_rig.session, magnet_rig.manager, magnet_rig.network)
-	magnet.charge_delay = 0.0
-	magnet.pull_delay = 0.0
-	magnet.pull_gap = 0.0
+	magnet.make_instant()
 	_top(magnet_rig.manager)
 	_place(magnet_rig.manager, [10, 18, 19, 26, 27, 28], Vector2(1000, 600))
 	magnet_rig.session.scoring.reset()
@@ -147,7 +146,7 @@ func _test_power_jackpots() -> void:
 	for event in magnet_rig.awards:
 		if event.source == PuzzleManager.ConnectionSource.POWER and event.piece_count == 6:
 			magnet_jackpots.append(event)
-	_check(magnet_rig.session.magnet_zone.activated and magnet_jackpots.size() == 1, "Magnet pulls a shared-perimeter cluster and awards it once")
+	_check(magnet_zone.state == PowerZone.State.DONE and magnet_jackpots.size() == 1, "Magnet pulls a shared-perimeter cluster and awards it once")
 	if not magnet_jackpots.is_empty():
 		var jackpot: Dictionary = magnet_jackpots[0]
 		var tier_before := int(jackpot.combo_before)
@@ -166,26 +165,9 @@ func _test_opening_anchors_and_pulse() -> void:
 	var corner_score := rig.session.scoring.score
 	m.request_release(47)
 	_check(rig.session.scoring.score == corner_score and rig.session.scoring.power_charges == 1, "corner milestone and score never repeat")
-	var ids := m.edge_pulse_targets()
-	_check(ids.size() == 6 and ids.has(1) and ids.has(6) and ids.has(8), "Edge Pulse prioritizes missing border pieces next to anchors")
-	var board := PuzzleBoard.new()
-	board.setup(m, rig.session, rig.network)
-	root.add_child(board)
-	var bank := PieceBank.new()
-	root.add_child(bank)
-	bank.configure(m.pieces, rig.session.source, rig.session.seed_value)
-	var pulse := EdgePulseController.new()
-	pulse.setup(m, rig.session.scoring, rig.network, board, bank)
-	root.add_child(pulse)
-	var table_before := m.table_count()
-	_check(pulse.activate() and rig.session.scoring.power_charges == 0 and m.table_count() == table_before, "Edge Pulse spends one charge and never places pieces")
-	_check(board.pulse_ids.has(1) and bank.pulse_ids.has(1) and bank.filter_name == "EDGES", "Edge Pulse reveals useful pieces in the bank and on the table")
-	_check(not pulse.activate() and rig.session.scoring.power_charges == 0, "Edge Pulse cannot spend when no Power Charge remains")
-	pulse.clear()
-	_check(board.pulse_ids.is_empty() and bank.pulse_ids.is_empty(), "Edge Pulse highlight clears")
 	var saved := rig.session.scoring.to_dict()
 	rig.session.scoring.from_dict(saved)
-	_check(rig.session.scoring.to_dict() == saved and rig.session.scoring.power_charges == 0, "anchor milestone and spent charges persist")
+	_check(rig.session.scoring.to_dict() == saved and rig.session.scoring.power_charges == 1, "anchor milestone and stored charges persist")
 
 func _test_charge_overflow_and_save() -> void:
 	var rig := _rig(119)
@@ -233,17 +215,26 @@ func _test_charge_overflow_and_save() -> void:
 func _test_audio_and_hud() -> void:
 	_check(Sfx.reward_kind(0, 1) == "small" and Sfx.reward_kind(1, 1) == "medium" and Sfx.reward_kind(2, 1) == "large" and Sfx.reward_kind(3, 1) == "large" and Sfx.reward_kind(3, 12) == "huge", "combo and event size choose different existing snap timbres")
 	var rig := _rig(121)
-	var view := RunScoreView.new()
+	var view := GameHud.new()
 	view.setup(rig.session.scoring, rig.manager, rig.session)
 	root.add_child(view)
-	_check(view.score_label.text.contains("0") and view.charge_label.text.contains("0 / 100") and view.stored_label.text.contains("0"), "the compact HUD shows score, Charge and stored charges")
+	_check(view.score_label.text.contains("0") and view.charge_label.text.contains("0/100") and view.charges.count == 0, "the thin HUD shows score, Charge and stored charges")
+	_check(view.objective_label.visible and view.objective_label.text.contains("0/4"), "the corner objective is shown at the start")
 	rig.manager.pieces[0].is_locked = true
 	rig.manager.piece_changed.emit(0)
-	_check(view.anchors_label.text.contains("1/4"), "anchor progress updates when a client receives a locked corner snapshot")
+	_check(view.objective_label.text.contains("1/4"), "objective progress updates when a client receives a locked corner snapshot")
 	rig.session.scoring.from_dict({"score": 1350, "charge": 18, "power_charges": 1, "combo_progress": 6})
-	_check(view.score_label.text.contains("1,350") and view.combo_label.text.contains("HOT") and view.charge_label.text.contains("18 / 100") and view.stored_label.text.contains("1"), "the HUD updates from authoritative scoring state")
+	_check(view.score_label.text.contains("1,350") and view.combo_label.text.contains("HOT") and view.combo_label.text.contains("1.5") and view.charge_label.text.contains("18/100") and view.charges.count == 1, "the HUD updates from authoritative scoring state")
 	view._on_awarded({"piece_ids": [0, 1, 2, 3, 4, 5], "piece_count": 6, "source": PuzzleManager.ConnectionSource.POWER, "score_gain": 1350, "charge_gain": 18, "charges_gained": 2})
 	_check(view._toasts.size() == 2 and view._toasts[0].text.contains("6 PIECE JOIN") and view._toasts[0].text.contains("+1,350") and view._toasts[1].text.contains("POWER CHARGED! ×2"), "cluster and multi-charge visual feedback is readable")
+	# the objective goes away for good once all four corners are anchored
+	for id in rig.manager.corner_ids():
+		rig.manager.pieces[id].is_locked = true
+	rig.manager.piece_changed.emit(0)
+	_check(not view.objective_label.visible, "the objective disappears when all four corners are anchored")
+	rig.manager.pieces[0].is_locked = false
+	rig.manager.piece_changed.emit(0)
+	_check(not view.objective_label.visible, "...and does not come back")
 	rig.session.size_index = 1
 	rig.session.start_puzzle(false)
-	_check(rig.session.scoring.score == 0 and rig.session.scoring.charge == 0 and rig.session.scoring.power_charges == 0 and rig.session.scoring.combo_progress == 0 and view.combo_label.text == "NORMAL" and view._toasts.is_empty(), "a new puzzle resets scoring, HUD and short notices")
+	_check(rig.session.scoring.score == 0 and rig.session.scoring.charge == 0 and rig.session.scoring.power_charges == 0 and rig.session.scoring.combo_progress == 0 and view.combo_label.text == "NORMAL" and view._toasts.is_empty() and view.objective_label.visible, "a new puzzle resets scoring, HUD, short notices and the objective")

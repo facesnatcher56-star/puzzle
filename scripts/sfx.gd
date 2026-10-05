@@ -97,6 +97,10 @@ func complete() -> void:
 func zap() -> void:
 	_play(_stream("zap", func(): return _render_zap()), -3.0)
 
+# Cluster Surge: a rising shimmer that settles into a soft chime.
+func surge() -> void:
+	_play(_stream("surge", func(): return _render_surge()), -6.0)
+
 func magnet_hum() -> void:
 	_play(_stream("magnet_hum", func(): return _render_magnet_hum()), -7.0)
 
@@ -225,3 +229,8 @@ func _render_magnet_pull() -> AudioStreamWAV:
 	return _make(0.42, func(t: float):
 		var sweep := sin(TAU * (150.0 + 600.0 * t) * t) * exp(-t * 7.0) * 0.28
 		return sweep + _thock(t - 0.18, 0.3))
+
+func _render_surge() -> AudioStreamWAV:
+	return _make(0.8, func(t: float):
+		var sweep := sin(TAU * (330.0 * t + 900.0 * t * t)) * minf(t * 14.0, 1.0) * exp(-t * 3.2) * 0.5
+		return sweep + _bell(t - 0.18, _freq(7), 5.0, 0.28) + _bell(t - 0.24, _freq(12), 5.5, 0.2) + _sparkle(t - 0.3, 3100.0, 0.07))

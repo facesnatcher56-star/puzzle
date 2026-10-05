@@ -223,10 +223,11 @@ func _play_finale() -> void:
 	var board_size := session.board_size
 	var tween := create_tween().set_parallel(true)
 	var viewport_size := get_viewport().get_visible_rect().size
-	var available := Vector2(viewport_size.x - 64, viewport_size.y - 50 - 85)
+	var bottom := 50.0 + AbilityBar.HEIGHT # the collapsed bank and the ability bar above it
+	var available := Vector2(viewport_size.x - 64, viewport_size.y - bottom - GameHud.TABLE_TOP - 14)
 	var fit := minf(available.x / board_size.x, available.y / board_size.y)
 	tween.tween_property(camera, "zoom", Vector2.ONE * fit, 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	tween.tween_property(camera, "position", Vector2(0, (50 - 53) * 0.5 / fit), 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_property(camera, "position", Vector2(0, (bottom - GameHud.TABLE_TOP) * 0.5 / fit), 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	var origin := Vector2.ZERO
 	if _drop_piece_id >= 0 and _drop_piece_id < manager.pieces.size():
 		origin = _piece_centre(manager.pieces[_drop_piece_id])
