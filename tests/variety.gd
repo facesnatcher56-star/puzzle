@@ -17,7 +17,7 @@ func _run() -> void:
 	game.session.start_puzzle(false)
 	await process_frame
 	_check(game.manager.pieces.size() == 250, "Default puzzle has 250 pieces")
-	_check(game.session.rotation_enabled, "Rotation starts enabled")
+	_check(game.session.random_rotation, "Pieces start at random rotations")
 	_check(game.session.source.get_size() == Vector2(1122, 1402), "Original artwork resolution preserved")
 	_check(PuzzleCatalog.BOARD_SIZE == game.session.source.get_size(), "Board preserves full image proportions")
 	_check(game.session.columns == 10 and game.session.rows == 25, "250-piece grid fits portrait artwork")
@@ -63,7 +63,8 @@ func _run() -> void:
 			game.manager.request_rotate(piece.piece_id)
 		game.manager.request_release(piece.piece_id)
 	_check(game.manager.completed_count() == 250 and game.complete_banner.visible, "250-piece puzzle completes after rotation and joining")
-	game.session.set_rotation_enabled(false)
+	game.session.random_rotation = false
+	game.session.start_puzzle(false)
 	for piece in game.manager.pieces:
 		_check(piece.current_rotation == 0, "Disabling rotation starts upright puzzle")
 	if failures == 0:

@@ -13,8 +13,6 @@ signal image_changed(id: String)
 signal puzzle_started(pieces: Array)
 # A saved or synced puzzle was rebuilt.
 signal puzzle_restored(pieces: Array)
-# The rotation setting changed (toggled, or loaded with a puzzle).
-signal rotation_changed(enabled: bool)
 
 const AUTOSAVE_INTERVAL := 2.0
 
@@ -30,7 +28,9 @@ var columns := 8
 var rows := 6
 var cell := Vector2(132, 117.333)
 var seed_value := 52813
-var rotation_enabled := true
+# Pieces start at random quarter-turns. Players can always rotate; this only exists so tests can ask for an
+# unrotated start.
+var random_rotation := true
 
 var save_slot := "" # file slot the running puzzle autosaves into; "" while a client (clients never save)
 var save_dirty := false
@@ -95,7 +95,7 @@ func start_puzzle(new_seed: bool) -> void:
 	columns = grid.x
 	rows = grid.y
 	cell = Vector2(board_size.x / columns, board_size.y / rows)
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, random_rotation)
 	if generated.size() != columns * rows:
 		push_error("Puzzle generation failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -116,12 +116,12 @@ func restore_puzzle(saved: Dictionary) -> void:
 	seed_value = int(saved.seed_value)
 	columns = int(saved.columns)
 	rows = int(saved.rows)
-	set_rotation(bool(saved.rotation_enabled))
 	cell = Vector2(board_size.x / columns, board_size.y / rows)
 	var size_match := sizes.find(Vector2i(columns, rows))
 	if size_match >= 0:
 		size_index = size_match
-	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, rotation_enabled)
+	# Every piece's rotation comes from the saved snapshots, so how the pieces were first scrambled is irrelevant here.
+	var generated := PuzzleGenerator.generate(source, columns, rows, seed_value, board_size, true)
 	if generated.size() != columns * rows:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
@@ -148,20 +148,12 @@ func apply_image(id: String) -> void:
 	size_index = sizes.size() - 1
 	image_changed.emit(id)
 
-func set_rotation_enabled(value: bool) -> void:
-	set_rotation(value)
-	start_puzzle(false)
-
-func set_rotation(value: bool) -> void:
-	rotation_enabled = value
-	rotation_changed.emit(value)
-
 # --- configuration shared with saves and the network ---
 
 func puzzle_config() -> Dictionary:
 	return {
 		"seed_value": seed_value, "columns": columns, "rows": rows,
-		"rotation_enabled": rotation_enabled, "image_id": image_id,
+		"rotation_enabled": true, "image_id": image_id, # key kept so saves stay readable by older builds
 		"elapsed_ms": Time.get_ticks_msec() - manager.started_at
 	}
 

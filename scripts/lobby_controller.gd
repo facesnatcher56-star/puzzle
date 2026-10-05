@@ -355,7 +355,7 @@ func _build_collection() -> void:
 		scroll.add_child(list)
 		for entry in entries:
 			list.add_child(_collection_card(entry, best))
-		_caption("★ marks your fastest time for that picture, piece count and rotation setting.")
+		_caption("★ marks your fastest time for that picture and piece count.")
 	_back_button()
 
 func _collection_card(entry: Dictionary, best: Dictionary) -> Control:
@@ -383,7 +383,7 @@ func _collection_card(entry: Dictionary, best: Dictionary) -> Control:
 	text.add_child(title)
 	var is_best: bool = int(entry.get("time_ms", 0)) > 0 and int(entry.get("time_ms", 0)) == int(best.get(Collection.bucket(entry), -1))
 	var stats := Label.new()
-	stats.text = "%d pieces  •  rotation %s%s" % [int(entry.pieces), "on" if entry.get("rotation", false) else "off", "  •  online" if entry.get("online", false) else ""]
+	stats.text = "%d pieces%s" % [int(entry.pieces), "  •  online" if entry.get("online", false) else ""]
 	stats.add_theme_font_size_override("font_size", 13)
 	text.add_child(stats)
 	var result := Label.new()

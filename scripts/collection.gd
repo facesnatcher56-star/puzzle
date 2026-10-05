@@ -2,7 +2,7 @@ class_name Collection
 extends RefCounted
 
 # Every finished puzzle is kept here with its stats, separate from in-progress saves.
-# An entry: {id, image_id, columns, rows, pieces, rotation, time_ms, completed_at, online}
+# An entry: {id, image_id, columns, rows, pieces, time_ms, completed_at, online}
 
 static var path := "user://collection.json"
 # Headless runs are automated tests; they must never write into a player's real collection.
@@ -62,13 +62,12 @@ static func entry_from(config: Dictionary, id: String, time_ms: int, completed_a
 	return {
 		"id": id, "image_id": str(config.get("image_id", "")),
 		"columns": columns, "rows": rows, "pieces": columns * rows,
-		"rotation": bool(config.get("rotation_enabled", false)),
 		"time_ms": time_ms, "completed_at": completed_at, "online": online
 	}
 
-# Same picture, piece count and rotation setting: the "best time" bucket.
+# Same picture and piece count: the "best time" bucket.
 static func bucket(entry: Dictionary) -> String:
-	return "%s|%d|%s" % [entry.get("image_id", ""), int(entry.get("pieces", 0)), str(entry.get("rotation", false))]
+	return "%s|%d" % [entry.get("image_id", ""), int(entry.get("pieces", 0))]
 
 # {bucket: fastest time_ms}
 static func best_times(entries: Array) -> Dictionary:

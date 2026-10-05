@@ -30,7 +30,8 @@ func _run() -> void:
 	var game := scene.instantiate()
 	root.add_child(game)
 	game.session.size_index = 1
-	game.session.set_rotation_enabled(false)
+	game.session.random_rotation = false
+	game.session.start_puzzle(false)
 	await process_frame
 	await process_frame
 	var manager: PuzzleManager = game.manager

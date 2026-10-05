@@ -123,7 +123,7 @@ func zoom_at(screen_position: Vector2, multiplier: float) -> void:
 # Called for every input event while no menu is open. (Escape and the menus are handled by the caller.)
 func handle_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_R and session.rotation_enabled:
+		if event.keycode == KEY_R:
 			rotate_selected()
 	if event is InputEventMagnifyGesture:
 		zoom_at(event.position, event.factor)
@@ -138,7 +138,7 @@ func handle_input(event: InputEvent) -> void:
 		handle_touch_drag(event)
 
 func rotate_selected() -> void:
-	if session.rotation_enabled and board.selected_id >= 0:
+	if board.selected_id >= 0:
 		network.request_rotate(board.selected_id)
 
 func handle_mouse_button(event: InputEventMouseButton) -> void:
@@ -153,7 +153,7 @@ func handle_mouse_button(event: InputEventMouseButton) -> void:
 	if event.button_index == MOUSE_BUTTON_MIDDLE:
 		mouse_panning = event.pressed and is_table_screen(event.position)
 		return
-	if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and session.rotation_enabled and is_table_screen(event.position):
+	if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and is_table_screen(event.position):
 		var hit := board.pick(screen_to_world(event.position))
 		if hit >= 0:
 			board.select(hit)
@@ -241,7 +241,7 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 		var world := screen_to_world(event.position)
 		var picked := board.pick(world)
 		board.select(picked)
-		if event.double_tap and picked >= 0 and session.rotation_enabled:
+		if event.double_tap and picked >= 0:
 			rotate_selected()
 			return
 		if picked >= 0 and network.request_pickup(picked):

@@ -187,7 +187,8 @@ func _run() -> void:
 	root.add_child(hide_game)
 	hide_game.lobby.hide_menu()
 	hide_game.session.new_session(false)
-	hide_game.session.set_rotation_enabled(false)
+	hide_game.session.random_rotation = false
+	hide_game.session.start_puzzle(false)
 	await process_frame
 	var hm: PuzzleManager = hide_game.manager
 	hm.request_place_from_bank(0, Vector2(100, 100))

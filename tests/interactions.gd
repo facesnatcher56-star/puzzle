@@ -53,7 +53,8 @@ func _run() -> void:
 	root.add_child(game)
 	game.lobby.hide_menu()
 	game.session.size_index = 1
-	game.session.set_rotation_enabled(false)
+	game.session.random_rotation = false
+	game.session.start_puzzle(false)
 	await process_frame
 	await process_frame
 	var bank_item: PieceBankItem = game.bank.row.get_child(0)
@@ -215,7 +216,8 @@ func _run() -> void:
 	_touch(touch_grip + Vector2(0, 40), false)
 	await process_frame
 	_check(game.bank.bank_height < touch_height_before - 30, "touch on bank grip resizes bank")
-	game.session.set_rotation_enabled(true)
+	game.session.random_rotation = true
+	game.session.start_puzzle(false)
 	await process_frame
 	var tap_point := Vector2(700, 300)
 	game.input_controller.place_bank_piece(game.bank.row.get_child(0).piece_id, tap_point)

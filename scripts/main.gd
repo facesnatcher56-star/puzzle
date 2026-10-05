@@ -34,7 +34,6 @@ var bank: PieceBank
 var complete_banner: PanelContainer
 var complete_label: Label
 var rotation_button: Button
-var rotation_toggle: CheckButton
 var size_picker: OptionButton
 var title_label: Label
 var top_hint: Label
@@ -114,7 +113,6 @@ func _connect_signals() -> void:
 	session.image_changed.connect(_on_image_changed)
 	session.puzzle_started.connect(_on_puzzle_started)
 	session.puzzle_restored.connect(_on_puzzle_restored)
-	session.rotation_changed.connect(_on_rotation_changed)
 	# the network
 	network.peer_joined.connect(func(_id: int): _update_network_status())
 	network.peer_left.connect(func(_id: int): _update_network_status())
@@ -258,16 +256,8 @@ func _build_top_bar() -> void:
 		session.size_index = index
 		session.start_puzzle(false))
 	top.add_child(size_picker)
-	rotation_toggle = CheckButton.new()
-	rotation_toggle.text = "Rotation"
-	rotation_toggle.button_pressed = session.rotation_enabled
-	rotation_toggle.tooltip_text = "Random quarter-turns. Changing this restarts the puzzle."
-	rotation_toggle.focus_mode = Control.FOCUS_NONE
-	rotation_toggle.toggled.connect(session.set_rotation_enabled)
-	top.add_child(rotation_toggle)
 	rotation_button = Button.new()
 	rotation_button.text = "↻ Rotate (R)"
-	rotation_button.visible = session.rotation_enabled
 	rotation_button.pressed.connect(input_controller.rotate_selected)
 	top.add_child(rotation_button)
 	var spacer := Control.new()
@@ -338,10 +328,6 @@ func _on_image_changed(id: String) -> void:
 	reference.set_image(session.source)
 	bank.buttons["reference"].visible = not random_mode # Random mode has no reference picture
 
-func _on_rotation_changed(enabled: bool) -> void:
-	rotation_toggle.set_pressed_no_signal(enabled)
-	rotation_button.visible = enabled
-
 func _on_puzzle_started(pieces: Array) -> void:
 	if bank.collapsed:
 		bank.toggle_collapsed()
@@ -410,8 +396,7 @@ func _update_network_status() -> void:
 		leave_button.visible = false
 	_apply_role_restrictions()
 
-# Only the host (or a solo player) may change the piece count and rotation setting.
+# Only the host (or a solo player) may change the piece count.
 func _apply_role_restrictions() -> void:
 	var editable := not network.is_client()
 	size_picker.disabled = not editable
-	rotation_toggle.disabled = not editable

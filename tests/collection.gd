@@ -25,7 +25,8 @@ func _run() -> void:
 	game.session.new_session(true)
 	game.session.size_index = 0
 	game.session.start_puzzle(false)
-	game.session.set_rotation_enabled(false)
+	game.session.random_rotation = false
+	game.session.start_puzzle(false)
 	var slot: String = game.session.save_slot
 	game.session.write_save()
 	_check(PuzzleSession.active_saves().size() == 1, "in-progress puzzle appears under saved games")
@@ -38,7 +39,7 @@ func _run() -> void:
 	await process_frame
 	var entries := Collection.load_all()
 	_check(game.manager.completion_announced and entries.size() == 1, "finishing a puzzle adds one entry to the Collection")
-	_check(entries.size() == 1 and entries[0].pieces == 24 and not entries[0].rotation and PuzzleCatalog.RANDOM_IMAGES.has(str(entries[0].image_id)), "entry records pieces, rotation and picture")
+	_check(entries.size() == 1 and entries[0].pieces == 24 and PuzzleCatalog.RANDOM_IMAGES.has(str(entries[0].image_id)), "entry records pieces and picture")
 	_check(PuzzleSession.active_saves().is_empty() and not FileAccess.file_exists(SaveManager.slot_path(slot)), "the finished puzzle leaves the saved-games list")
 	_check(game.session.save_slot == "" and game.session.needs_new_slot, "its save slot is retired so autosave cannot bring it back")
 	game.session.write_save()
