@@ -357,6 +357,18 @@ func _test_in_the_game() -> void:
 	var corner_screen: Vector2 = game.get_viewport().get_canvas_transform() * (game.manager.pieces[0].correct_position + game.manager.pieces[0].piece_size * 0.5)
 	_click(corner_screen)
 	_check(game.board.selected_id == 0 and game.manager.pieces[0].is_locked, "clicking the anchored section selects it, so a power can be aimed at the main puzzle")
+	# a group that joins the main puzzle is not left selected (no highlight to click away), and the locked
+	# main puzzle itself is never outlined
+	game.session.start_puzzle(false)
+	game.session.power_zones.clear()
+	await process_frame
+	_place(game.manager, [1], Vector2(2, 1)) # a loose piece sitting right where it belongs, next to the empty corner
+	game.board.select(1)
+	_check(game.board.selected_id == 1 and game.board.views[1].selected, "a loose group is selected and outlined")
+	_place(game.manager, [0], Vector2(9, 6)) # the corner anchors and takes piece 1 in
+	_check(game.manager.pieces[1].is_locked and game.board.selected_id == -1 and not game.board.views[1].selected, "once it joins the main puzzle the selection clears itself")
+	game.board.select(0)
+	_check(game.board.selected_id == 0 and not game.board.views[0].selected and not game.board.views[1].selected, "the main puzzle can still be selected as a target, but is never outlined")
 	# the HUD: objective until the corners are down, flame and diamonds on the strip
 	_check(game.hud.objective_label.visible and game.hud.objective_label.text.contains("1/4"), "the corner objective shows progress")
 	# the strip and the bank header are slim

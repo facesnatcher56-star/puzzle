@@ -60,7 +60,7 @@ static func entry_from(config: Dictionary, id: String, time_ms: int, completed_a
 	var columns := int(config.columns)
 	var rows := int(config.rows)
 	return {
-		"id": id, "image_id": str(config.get("image_id", "")),
+		"id": id, "image_id": str(config.get("image_id", "")), "seed_value": int(config.get("seed_value", 0)),
 		"columns": columns, "rows": rows, "pieces": columns * rows,
 		"time_ms": time_ms, "completed_at": completed_at, "online": online
 	}
@@ -86,7 +86,8 @@ static func totals(entries: Array) -> Dictionary:
 	for entry in entries:
 		pieces += int(entry.get("pieces", 0))
 		time_ms += int(entry.get("time_ms", 0))
-		pictures[str(entry.get("image_id", ""))] = true
+		if not PuzzleCatalog.is_generated(str(entry.get("image_id", ""))):
+			pictures[str(entry.get("image_id", ""))] = true # generated pictures are endless, so they are not counted as "of N"
 	return {"count": entries.size(), "pieces": pieces, "time_ms": time_ms, "pictures": pictures.size()}
 
 # True if a saved puzzle's snapshots show every piece placed and joined into one group.

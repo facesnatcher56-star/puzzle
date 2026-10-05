@@ -76,7 +76,12 @@ func on_piece_changed(piece_id: int) -> void:
 	elif gliding:
 		view.pulse(0.2) # a piece fetched from the bank has nowhere to fly from, so it swells into place
 	views[piece_id].refresh_seams()
+	# A group that has just joined the main puzzle stops being selected: the highlight would otherwise outline
+	# the whole main puzzle and have to be clicked away after every join.
+	var newly_locked: bool = piece.is_locked and not views[piece_id].locked
 	views[piece_id].set_locked(piece.is_locked)
+	if newly_locked and selected_id >= 0 and manager.get_piece(selected_id) != null and manager.get_piece(selected_id).is_locked:
+		select(-1)
 	if highlight_kind != "":
 		refresh_type_highlight()
 
@@ -126,7 +131,8 @@ func select(piece_id: int) -> void:
 	for view in views.values():
 		view.set_selected(false)
 	selected_id = piece_id
-	if piece_id >= 0:
+	# The locked main puzzle can be selected (to aim a power at it) but is never outlined.
+	if piece_id >= 0 and not manager.is_locked(piece_id):
 		for member_id in manager.cluster_members(piece_id):
 			if views.has(member_id):
 				views[member_id].set_selected(true)

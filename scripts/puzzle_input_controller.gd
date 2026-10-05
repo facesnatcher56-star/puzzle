@@ -185,7 +185,7 @@ func handle_mouse_button(event: InputEventMouseButton) -> void:
 			clear_ghost()
 		if dragging_table_id >= 0:
 			drop_piece(dragging_table_id)
-			board.select(dragging_table_id)
+			board.select(-1 if manager.is_locked(dragging_table_id) else dragging_table_id) # a group that just joined the main puzzle is not left selected
 			dragging_table_id = -1
 		mouse_panning = false
 		return
@@ -286,7 +286,7 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 			clear_ghost()
 		if touch_table_id >= 0:
 			drop_piece(touch_table_id)
-			board.select(touch_table_id)
+			board.select(-1 if manager.is_locked(touch_table_id) else touch_table_id)
 			touch_table_id = -1
 		if fingers.is_empty():
 			touch_panning = false

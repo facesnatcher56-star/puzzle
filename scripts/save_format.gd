@@ -20,8 +20,7 @@ static func format_time(milliseconds: int) -> String:
 	return "%d:%02d" % [seconds / 60, seconds % 60]
 
 static func title(saved: Dictionary) -> String:
-	var saved_image := str(saved.get("image_id", ""))
-	return "Emberbound" if saved_image == "" else "Random  •  " + saved_image.capitalize()
+	return PuzzleCatalog.label_for(str(saved.get("image_id", "")), int(saved.get("seed_value", 0)))
 
 static func detail(saved: Dictionary) -> String:
 	var placed := 0

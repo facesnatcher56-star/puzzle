@@ -76,6 +76,14 @@ func new_session(random_mode: bool) -> void:
 	start_puzzle(false)
 	write_save() # list it under Load Game straight away
 
+# A new puzzle with a picture made on the spot from `theme` (a ProceduralImage theme id, or "any").
+func new_generated_session(theme: String) -> void:
+	save_slot = SaveManager.new_slot_id()
+	seed_value = randi_range(1, 1000000)
+	apply_image(PuzzleCatalog.generated_id(theme))
+	start_puzzle(false)
+	write_save()
+
 # Loads a saved puzzle into this session; false if the file is missing, damaged, or names artwork this build lacks.
 func load_session(slot: String) -> bool:
 	var saved := SaveManager.load_state(SaveManager.slot_path(slot))
@@ -95,7 +103,11 @@ func start_puzzle(new_seed: bool) -> void:
 		seed_value += 1
 		if not network.is_client():
 			save_slot = SaveManager.new_slot_id()
-		if image_id != "":
+		if PuzzleCatalog.is_generated(image_id):
+			var keep_size := size_index
+			apply_image(image_id) # a new seed is a new picture from the same theme, at the size already chosen
+			size_index = keep_size
+		elif image_id != "":
 			apply_image(pick_random_image())
 	puzzle_resetting.emit()
 	var grid: Vector2i = sizes[size_index]
@@ -123,8 +135,8 @@ func restore_puzzle(saved: Dictionary) -> void:
 	if not PuzzleCatalog.is_known(saved_image):
 		push_error("Puzzle restore failed: unknown image '%s'" % saved_image)
 		return
+	seed_value = int(saved.seed_value) # first: a generated picture is made from the seed
 	apply_image(saved_image)
-	seed_value = int(saved.seed_value)
 	columns = int(saved.columns)
 	rows = int(saved.rows)
 	cell = Vector2(board_size.x / columns, board_size.y / rows)
@@ -156,7 +168,7 @@ func restore_from_host(config: Dictionary, snapshots: Array) -> void:
 # Switches picture, board size and piece-count options.
 func apply_image(id: String) -> void:
 	image_id = id
-	source = PuzzleCatalog.texture_for(id)
+	source = PuzzleCatalog.texture_for(id, seed_value)
 	board_size = source.get_size()
 	sizes = PuzzleCatalog.sizes_for(id)
 	size_index = sizes.size() - 1

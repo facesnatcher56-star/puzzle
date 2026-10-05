@@ -179,6 +179,28 @@ func refresh() -> void:
 	for entry in FILTERS:
 		buttons["filter:" + entry[0]].modulate = Color("f3dba4") if filter_name == entry[0] else Color.WHITE
 
+# A cheap update after pieces move between the bank and the table: drops the tiles of pieces that left. It only
+# falls back to a full rebuild when a tile has to appear (a tray change), so placing a piece costs the same on a
+# 1,000-piece puzzle as on a 24-piece one instead of rebuilding every remaining tile.
+func sync() -> void:
+	if row == null or source == null:
+		return
+	var shown := {}
+	for item in row.get_children():
+		shown[(item as PieceBankItem).piece_id] = item
+	var gone := []
+	for piece in pieces:
+		var wanted := not piece.is_on_table and _passes_filter(piece)
+		if wanted and not shown.has(piece.piece_id):
+			refresh()
+			return
+		if not wanted and shown.has(piece.piece_id):
+			gone.append(shown[piece.piece_id])
+	for item in gone:
+		row.remove_child(item)
+		item.queue_free()
+	update_counts()
+
 func update_counts() -> void:
 	var remaining := 0
 	for piece in pieces:

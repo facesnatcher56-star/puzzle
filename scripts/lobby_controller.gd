@@ -305,7 +305,22 @@ func _build_new_game() -> void:
 	if PuzzleSession.fresh_random_images().is_empty():
 		random_detail = "Every picture is finished or started  •  pictures may repeat"
 	_button("Random Puzzle", random_detail, func(): _start_new(true))
+	_button("Generated Puzzle", "A brand-new picture made for you  •  choose a theme", _build_theme_picker)
 	_back_button()
+
+# Generated pictures: pick a theme (or let the game choose). Every theme is cut and played exactly like a Random Puzzle.
+func _build_theme_picker() -> void:
+	_begin_screen(true)
+	_heading("GENERATED PUZZLE", "A picture made just for this puzzle")
+	_button("Surprise Me", "A different theme each time", func(): _start_generated(ProceduralImage.ANY))
+	for theme in ProceduralImage.THEMES:
+		_button(theme.name, theme.blurb, _start_generated.bind(theme.id))
+	var back := _button("Back", "", _build_new_game)
+	back.custom_minimum_size.y = 46
+
+func _start_generated(theme: String) -> void:
+	hide_menu()
+	session.new_generated_session(theme)
 
 func _start_new(random_mode: bool) -> void:
 	hide_menu()
@@ -388,7 +403,7 @@ func _collection_card(entry: Dictionary, best: Dictionary) -> Control:
 	row.add_theme_constant_override("separation", 14)
 	card.add_child(row)
 	var thumb := TextureRect.new()
-	thumb.texture = PuzzleCatalog.texture_for(str(entry.get("image_id", "")))
+	thumb.texture = PuzzleCatalog.thumbnail_for(str(entry.get("image_id", "")), int(entry.get("seed_value", 0)))
 	thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	thumb.custom_minimum_size = Vector2(104, 78)
@@ -439,15 +454,16 @@ func _build_host() -> void:
 	_host_game_picker.clip_text = true
 	game_row.add_child(_host_game_picker)
 	_host_save_label = _caption("")
-	_host_entries = [{"random": false}, {"random": true}]
+	_host_entries = [{"random": false}, {"random": true}, {"generated": ProceduralImage.ANY}]
 	_host_game_picker.add_item("New: Emberbound")
 	_host_game_picker.add_item("New: Random Puzzle")
+	_host_game_picker.add_item("New: Generated Puzzle")
 	for entry in PuzzleSession.active_saves():
 		_host_entries.append({"slot": entry.slot, "data": entry.data})
 		_host_game_picker.add_item("Saved: %s  •  %s" % [SaveFormat.title(entry.data), SaveFormat.detail(entry.data).get_slice("  •  ", 0)])
 	_host_game_picker.item_selected.connect(_on_host_game_selected)
 	# Default to the most recent saved game when there is one.
-	_host_game_picker.select(2 if _host_entries.size() > 2 else 0)
+	_host_game_picker.select(3 if _host_entries.size() > 3 else 0)
 	_on_host_game_selected(_host_game_picker.selected)
 	var start_button := Button.new()
 	start_button.text = "Start Hosting"
@@ -482,12 +498,20 @@ func _on_start_hosting_pressed() -> void:
 	hide_menu()
 	var entry: Dictionary = _host_entries[_host_game_picker.selected]
 	if not entry.has("slot") or not session.load_session(entry.slot):
-		session.new_session(bool(entry.get("random", false)))
+		if entry.has("generated"):
+			session.new_generated_session(str(entry.generated))
+		else:
+			session.new_session(bool(entry.get("random", false)))
 	hosting_started.emit()
 
 func _lan_label() -> String:
 	var peer_count := 1 + multiplayer.get_peers().size()
-	return "%s (%d online)" % ["Random Puzzle" if session.image_id != "" else "Emberbound Jigsaw", peer_count]
+	var name := "Emberbound Jigsaw"
+	if PuzzleCatalog.is_generated(session.image_id):
+		name = "Generated Puzzle"
+	elif session.image_id != "":
+		name = "Random Puzzle"
+	return "%s (%d online)" % [name, peer_count]
 
 func _build_join() -> void:
 	_begin_screen(true)

@@ -174,6 +174,12 @@ class PieceEdges extends Node2D:
 		pulse += delta * 6.0
 		queue_redraw()
 
+	# Godot switches processing on for any node that defines _process once it enters the tree, so it has to be
+	# switched back off here: only the pulsing finder glow animates, and otherwise every piece would redraw its
+	# outline every frame.
+	func _ready() -> void:
+		set_process(flagged)
+
 	func setup(piece: PuzzlePieceState) -> void:
 		points = piece.outline
 		var area := 0.0

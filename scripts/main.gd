@@ -121,7 +121,7 @@ func _connect_signals() -> void:
 	manager.piece_changed.connect(board.on_piece_changed)
 	manager.piece_changed.connect(input_controller.on_piece_changed)
 	manager.piece_changed.connect(completion.on_piece_changed)
-	manager.bank_changed.connect(func(): bank.refresh())
+	manager.bank_changed.connect(func(): bank.sync())
 	manager.pieces_joined.connect(_on_pieces_joined)
 	manager.group_locked.connect(completion.on_group_locked)
 	manager.puzzle_completed.connect(completion.on_completed)
