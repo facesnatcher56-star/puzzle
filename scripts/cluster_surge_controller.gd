@@ -57,7 +57,7 @@ func has_authority() -> bool:
 # repeats it when it acts.)
 func can_use(piece_id: int, requester: int = 0) -> bool:
 	var piece := manager.get_piece(piece_id)
-	if piece == null or not piece.is_on_table or scoring.power_charges < COST:
+	if piece == null or not piece.is_on_table or scoring.ledger(RunScoring.key_for(requester)).power_charges < COST:
 		return false
 	for member_id in manager.cluster_members(piece_id):
 		var owner: int = manager.pieces[member_id].owner_peer_id
@@ -76,12 +76,12 @@ func request(piece_id: int) -> bool:
 func activate(piece_id: int, requester: int = 0) -> bool:
 	if not has_authority() or not can_use(piece_id, requester):
 		return false
-	if not scoring.spend_power_charge():
+	if not scoring.spend_power_charge(requester):
 		return false
 	var members := manager.cluster_members(piece_id).duplicate()
 	surge_started.emit(piece_id, members)
 	network.announce_surge_started(piece_id, members)
-	_run(piece_id, _pick_targets(piece_id))
+	_run(piece_id, _pick_targets(piece_id), requester)
 	return true
 
 func _on_remote_request(piece_id: int, peer_id: int) -> void:
@@ -100,7 +100,7 @@ func _pick_targets(piece_id: int) -> Array:
 		targets.append(option.piece)
 	return targets
 
-func _run(anchor_id: int, targets: Array) -> void:
+func _run(anchor_id: int, targets: Array, requester: int) -> void:
 	var generation := _generation
 	for target_id in targets:
 		if generation != _generation:
@@ -117,7 +117,10 @@ func _run(anchor_id: int, targets: Array) -> void:
 			await get_tree().create_timer(pull_delay).timeout
 			if generation != _generation:
 				return
+		var previous_actor := manager.acting_player
+		manager.acting_player = requester # the pulled joins build the requesting player's Charge and streak
 		var moved := manager.pull_to_group(target_id, anchor_id)
+		manager.acting_player = previous_actor
 		if not moved.is_empty():
 			network.broadcast_power_result(anchor_id)
 			pull_landed.emit(anchor_id, target_id, moved)

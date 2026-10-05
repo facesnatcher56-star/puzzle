@@ -152,6 +152,7 @@ func _run() -> void:
 	# Every outline must be a clean, fillable polygon (tabs never fold over or cross each other),
 	# otherwise the artwork shows holes. Also check the grown outline used for joined pieces.
 	for sd in range(1, 31):
+		print("geometry: seed %d" % sd) # progress, so a watcher can tell a slow run from a hung one
 		for grid in [Vector2i(8, 6), Vector2i(18, 14)]:
 			for pc in PuzzleGenerator.generate(game.session.source, grid.x, grid.y, sd, game.session.board_size, false):
 				var tag := "seed %d %dx%d piece %d" % [sd, grid.x, grid.y, pc.piece_id]

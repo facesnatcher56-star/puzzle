@@ -79,7 +79,6 @@ func _run() -> void:
 	host_surge.rng.seed = 5
 	# One loose piece in the middle of the table; its four neighbours are in the bank. The host holds one charge.
 	_place(host_manager, [14], Vector2(900, 500))
-	host_session.scoring.from_dict({"power_charges": 1, "revision": 1})
 
 	var client_root := Node.new()
 	root.add_child(client_root)
@@ -109,8 +108,13 @@ func _run() -> void:
 		return
 	_check(_differences(client_manager, host_manager).is_empty(), "the client starts with the host's pieces")
 	# the shared charge arrives with the first scoring sync; give the host's state to the client
-	host_network.announce_scoring(host_session.scoring.to_dict(), {})
-	await _wait_until(func(): return client_session.scoring.power_charges == 1, 6.0, "the client sees the shared Power Charge")
+	# Power Charges are personal: the client has one of its own (the host's own are separate)
+	var client_key := RunScoring.key_for(client_network.local_player_id())
+	host_session.scoring.ledger(client_key).power_charges = 1
+	host_session.scoring.revision += 1
+	host_network.announce_scoring(host_session.scoring.to_sync_dict(), {})
+	await _wait_until(func(): return client_session.scoring.power_charges == 1, 6.0, "the client sees its own Power Charge")
+	_check(host_session.scoring.power_charges == 0, "...which the host does not share")
 
 	var host_pulls := []
 	var client_pulls := []
@@ -123,10 +127,10 @@ func _run() -> void:
 
 	_check(client_surge.can_use(14, client_network.local_player_id()), "the client sees that a Surge is possible")
 	_check(client_surge.activate(14, client_network.local_player_id()) == false, "the client cannot activate a Surge itself")
-	_check(client_session.scoring.power_charges == 1 and host_session.scoring.power_charges == 1, "...and nothing was spent")
+	_check(client_session.scoring.power_charges == 1 and host_session.scoring.ledger(client_key).power_charges == 1, "...and nothing was spent")
 	_check(client_surge.request(14), "the client asks the host for a Surge on the loose piece")
 	await _wait_until(func(): return host_landed.size() == 3 and client_pulls.size() == 3, 8.0, "three pulls happen on both peers")
-	_check(host_session.scoring.power_charges == 0, "the host spent the shared charge")
+	_check(host_session.scoring.ledger(client_key).power_charges == 0 and host_session.scoring.power_charges == 0, "the host spent the client's own charge")
 	await _wait_until(func(): return client_session.scoring.power_charges == 0 and _differences(client_manager, host_manager).is_empty(), 6.0, "the client ends with the host's pieces and charge")
 	_check(client_started == [14], "the client was shown the surge begin on the piece it chose")
 	_check(host_pulls == client_pulls, "the client was shown exactly the host's pulls, in order, with the same groups")
@@ -135,15 +139,16 @@ func _run() -> void:
 	client_surge.request(14)
 	for i in range(40):
 		await process_frame
-	_check(host_pulls.size() == 3 and host_session.scoring.power_charges == 0, "a request with no Power Charge left is refused")
+	_check(host_pulls.size() == 3 and host_session.scoring.ledger(client_key).power_charges == 0, "a request with no Power Charge left is refused")
 	# a request for a group someone else is holding is refused, and costs nothing
-	host_session.scoring.from_dict({"power_charges": 1, "revision": 5})
-	host_network.announce_scoring(host_session.scoring.to_dict(), {})
+	host_session.scoring.ledger(client_key).power_charges = 1
+	host_session.scoring.revision += 1
+	host_network.announce_scoring(host_session.scoring.to_sync_dict(), {})
 	host_manager.request_pickup(14, 77)
 	client_surge.request(14)
 	for i in range(40):
 		await process_frame
-	_check(host_pulls.size() == 3 and host_session.scoring.power_charges == 1, "a group held by another player cannot be surged, and nothing is spent")
+	_check(host_pulls.size() == 3 and host_session.scoring.ledger(client_key).power_charges == 1, "a group held by another player cannot be surged, and nothing is spent")
 
 	if failures == 0:
 		print("CLUSTER SURGE NETWORK TEST PASSED: the client asks, the host decides, both see the same pulls")

@@ -129,7 +129,7 @@ func start_puzzle(new_seed: bool) -> void:
 	mark_dirty()
 
 # Rebuilds a puzzle from a save (or a host's synced state): same pieces, positions and rotations.
-func restore_puzzle(saved: Dictionary) -> void:
+func restore_puzzle(saved: Dictionary, adopt_host_ledger: bool = true) -> void:
 	puzzle_resetting.emit()
 	var saved_image := str(saved.get("image_id", ""))
 	if not PuzzleCatalog.is_known(saved_image):
@@ -149,7 +149,7 @@ func restore_puzzle(saved: Dictionary) -> void:
 		push_error("Puzzle restore failed: expected %d pieces, got %d" % [columns * rows, generated.size()])
 		return
 	manager.configure(generated, cell, columns, rows)
-	scoring.from_dict(saved.get("scoring", {}) if saved.get("scoring", {}) is Dictionary else {})
+	scoring.from_dict(saved.get("scoring", {}) if saved.get("scoring", {}) is Dictionary else {}, adopt_host_ledger)
 	power_zones = PowerZone.zones_from_save(saved, columns, rows)
 	restoring = true
 	manager.apply_snapshots(saved.pieces) # emits piece_changed for every piece; the board creates each on-table view reactively
@@ -163,7 +163,7 @@ func restore_from_host(config: Dictionary, snapshots: Array) -> void:
 	save_slot = ""
 	var saved := config.duplicate()
 	saved["pieces"] = snapshots
-	restore_puzzle(saved)
+	restore_puzzle(saved, false) # the host's Charge and streak are the host's: a joining player starts with their own, empty
 
 # Switches picture, board size and piece-count options.
 func apply_image(id: String) -> void:

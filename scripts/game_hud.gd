@@ -235,10 +235,14 @@ func _on_awarded(event: Dictionary) -> void:
 	var screen := get_viewport().get_canvas_transform() * centre
 	var count := int(event.piece_count)
 	var title := "%d PIECE JOIN\n" % count if count > 1 else ""
-	if bool(event.get("first_try", false)):
+	# the score is everyone's; the streak and Charge are only shown to the player they belong to
+	var mine := int(event.get("player", RunScoring.HOST_KEY)) == scoring.local_key()
+	if mine and bool(event.get("first_try", false)):
 		title = "FIRST TRY!  STREAK %d  ×%s\n" % [int(event.streak), RunScoring.format_multiplier(float(event.multiplier))] + title
 	var notice := Label.new()
-	notice.text = "%s+%s\n+%d CHARGE" % [title, _with_commas(int(event.score_gain)), int(event.charge_gain)]
+	notice.text = "%s+%s" % [title, _with_commas(int(event.score_gain))]
+	if mine:
+		notice.text += "\n+%d CHARGE" % int(event.charge_gain)
 	notice.add_theme_font_size_override("font_size", 19 if count >= 4 else 16)
 	notice.add_theme_color_override("font_color", TEAL if int(event.source) == PuzzleManager.ConnectionSource.POWER else GOLD)
 	notice.add_theme_color_override("font_outline_color", Color(0.04, 0.07, 0.08, 0.85))
@@ -253,7 +257,7 @@ func _on_awarded(event: Dictionary) -> void:
 	tween.chain().tween_callback(func():
 		_toasts.erase(notice)
 		notice.queue_free())
-	if int(event.charges_gained) > 0:
+	if mine and int(event.charges_gained) > 0:
 		_show_banner("POWER CHARGED!" + (" ×%d" % int(event.charges_gained) if int(event.charges_gained) > 1 else ""), 19, 0.8)
 
 func _keep_toast(label: Label) -> void:
@@ -270,10 +274,10 @@ func _on_tier_rose(_tier: int) -> void:
 	combo_label.scale = Vector2(1.18, 1.18)
 	create_tween().tween_property(combo_label, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
-func _on_anchors_completed() -> void:
+func _on_anchors_completed(player: int) -> void:
 	_objective_done = true
 	_refresh_objective()
-	_show_banner("ALL CORNERS ANCHORED\n+1 POWER CHARGE", 17, 1.6)
+	_show_banner("ALL CORNERS ANCHORED" + ("\n+1 POWER CHARGE" if player == scoring.local_key() else ""), 17, 1.6)
 
 # A centred banner under the strip that holds for `hold` seconds, then fades.
 func _show_banner(text: String, font_size: int, hold: float) -> void:

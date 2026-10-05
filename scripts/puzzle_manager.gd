@@ -28,6 +28,9 @@ var rows := 0
 var started_at := 0
 var clusters := {} # Cluster ID -> piece IDs; the lowest piece ID survives a merge.
 var completion_announced := false
+# The player whose action is being carried out right now (the one who let go of a piece, or whose power is moving
+# pieces): scoring credits Charge and streak to them. 0 is the host or a solo player.
+var acting_player := 0
 
 func configure(states: Array[PuzzlePieceState], cell: Vector2, grid_columns: int, grid_rows: int) -> void:
 	pieces = states
@@ -139,6 +142,8 @@ func request_release(piece_id: int, player_id: int = 0, count_failed_attempt: bo
 	# `count_failed_attempt` is false for a drop that was not a deliberate placement (a menu opened mid-drag, or the
 	# group was barely moved). A deliberate drop of a solo piece that has never been near another piece is the one
 	# chance at a first-try placement; dropping it anywhere not near another piece, as often as you like, costs nothing.
+	var previous_actor := acting_player
+	acting_player = player_id
 	var group := cluster_members(piece_id)
 	var eligible := count_failed_attempt and group.size() == 1 and not piece.attempted
 	var near := count_failed_attempt and _near_other_piece(piece_id)
@@ -154,6 +159,7 @@ func request_release(piece_id: int, player_id: int = 0, count_failed_attempt: bo
 			pieces[member_id].attempted = true
 	if eligible:
 		first_try_ended.emit(piece_id, missed)
+	acting_player = previous_actor
 	return joined
 
 # Used when a networked peer disconnects mid-drag so their held pieces don't stay locked forever.

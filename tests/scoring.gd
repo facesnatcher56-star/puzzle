@@ -47,6 +47,7 @@ func _top(m: PuzzleManager) -> void:
 
 func _run() -> void:
 	await _test_first_try_streak()
+	_test_players_are_separate()
 	_test_power_jackpots()
 	_test_opening_anchors_and_pulse()
 	_test_charge_overflow_and_save()
@@ -139,6 +140,71 @@ func _test_first_try_streak() -> void:
 	other.manager.pieces[3].apply_snapshot(snap)
 	_check(other.manager.pieces[3].attempted, "...and restored")
 
+# Each player has their own Charge, Power Charges and streak; only the Score is shared.
+func _test_players_are_separate() -> void:
+	var rig := _rig(140)
+	var m := rig.manager
+	var scoring := rig.session.scoring
+	var drop := func(id: int, player: int, offset: Vector2) -> void:
+		m.request_place_from_bank(id, m.pieces[id].correct_position + offset)
+		m.request_pickup(id, player)
+		m.request_release(id, player)
+	drop.call(0, 5, Vector2(9, 6)) # player 5 anchors the corner first try
+	_check(scoring.ledger(5).streak == 1 and scoring.ledger(RunScoring.HOST_KEY).streak == 0 and scoring.streak == 0, "a player's first-try placement builds only their own streak")
+	_check(rig.awards.back().player == 5 and rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(1)), "the award names the player and uses their own multiplier")
+	_check(scoring.ledger(5).charge == 5 and scoring.ledger(RunScoring.HOST_KEY).charge == 0 and scoring.ledger(6).charge == 0, "...and only their own Charge")
+	var score_after_five := scoring.score
+	drop.call(1, 6, Vector2(11, 7)) # player 6 places the next piece
+	_check(scoring.ledger(6).streak == 1 and scoring.ledger(5).streak == 1, "another player's placement does not extend your streak")
+	_check(rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(1)) and scoring.score == score_after_five + rig.awards.back().score_gain, "...but the score is everyone's")
+	drop.call(2, 5, Vector2(11, 7))
+	_check(scoring.ledger(5).streak == 2 and scoring.ledger(6).streak == 1 and rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(2)), "each player is paid at their own multiplier")
+	# player 6 drops a piece beside the border wrong way up: their streak ends, player 5's does not
+	m.request_place_from_bank(3, m.pieces[3].correct_position + Vector2(11, 7))
+	m.request_pickup(3, 6)
+	m.request_rotate(3)
+	var before := scoring.score
+	m.request_release(3, 6)
+	_check(scoring.ledger(6).streak == 0 and scoring.ledger(5).streak == 2 and scoring.score == before, "one player's miss ends only their own streak, and takes nothing from the score")
+	# spending is per player
+	scoring.ledger(5).power_charges = 1
+	_check(not scoring.spend_power_charge(6) and scoring.spend_power_charge(5) and scoring.ledger(5).power_charges == 0, "a Power Charge can only be spent by its owner")
+	# only the host's (or a solo player's) buildup is saved; other players start empty after a reload
+	scoring.ledger(RunScoring.HOST_KEY).streak = 3
+	var saved := scoring.to_dict()
+	_check(int(saved.streak) == 3 and not saved.has("ledgers"), "the save holds the host's own buildup and nobody else's")
+	scoring.from_dict(saved)
+	_check(scoring.ledger(RunScoring.HOST_KEY).streak == 3 and scoring.ledger(5).streak == 0, "after a reload other players start from nothing")
+	scoring.from_dict(saved, false)
+	_check(scoring.streak == 0 and scoring.score == int(saved.score), "a joining player takes the shared score but not the host's buildup")
+	# a power's awards go to the player whose action set it off
+	var powers_rig := _rig(141)
+	powers_rig.session.power_zones = [PowerZone.make(8, 6, 0, 0, 1, 1, PowerZone.Kind.LIGHTNING)]
+	var powers := PowerController.new()
+	root.add_child(powers)
+	powers.setup(powers_rig.session, powers_rig.manager, powers_rig.network)
+	powers.make_instant()
+	var pm := powers_rig.manager
+	pm.request_place_from_bank(0, pm.pieces[0].correct_position + Vector2(9, 6))
+	pm.request_pickup(0, 7)
+	pm.request_release(0, 7)
+	var power_awards := powers_rig.awards.filter(func(e): return e.source == PuzzleManager.ConnectionSource.POWER)
+	_check(not power_awards.is_empty() and power_awards.all(func(e): return e.player == 7), "a board power's awards go to the player who charged it")
+	_check(powers_rig.session.scoring.ledger(7).charge > 5 and powers_rig.session.scoring.ledger(RunScoring.HOST_KEY).charge == 0, "...building that player's Charge")
+	# a Surge is credited to the player who used it
+	var surge_rig := _rig(142)
+	var surge := ClusterSurgeController.new()
+	root.add_child(surge)
+	surge.setup(surge_rig.session, surge_rig.manager, surge_rig.network, surge_rig.session.scoring)
+	surge.make_instant()
+	var sm := surge_rig.manager
+	sm.request_place_from_bank(9, sm.pieces[9].correct_position + Vector2(800, 400))
+	surge_rig.session.scoring.ledger(8).power_charges = 1
+	_check(not surge.activate(9, 3), "a player with no charge of their own cannot start a Surge")
+	_check(surge.activate(9, 8) and surge_rig.session.scoring.ledger(8).power_charges == 0, "the Surge spends the requesting player's own charge")
+	var surge_awards := surge_rig.awards.filter(func(e): return e.source == PuzzleManager.ConnectionSource.POWER)
+	_check(not surge_awards.is_empty() and surge_awards.all(func(e): return e.player == 8) and surge_rig.session.scoring.ledger(8).charge > 0 and surge_rig.session.scoring.ledger(RunScoring.HOST_KEY).charge == 0, "...and its pulls build that player's Charge")
+
 func _test_power_jackpots() -> void:
 	var lightning_rig := _rig(117)
 	_top(lightning_rig.manager)
@@ -179,7 +245,7 @@ func _test_opening_anchors_and_pulse() -> void:
 	var rig := _rig(130)
 	var m := rig.manager
 	var milestone_count := [0]
-	rig.session.scoring.anchors_completed.connect(func(): milestone_count[0] += 1)
+	rig.session.scoring.anchors_completed.connect(func(_player: int): milestone_count[0] += 1)
 	for id in [0, 7, 40, 47]:
 		_place(m, [id], Vector2(7, 4))
 	_check(m.anchored_corner_count() == 4 and milestone_count[0] == 1, "four separate corner anchors trigger one milestone")

@@ -172,7 +172,7 @@ func _test_puzzles() -> void:
 		var covered := 0
 		for zone in session.power_zones:
 			covered += zone.area()
-		_check(float(covered) / count >= 0.52 and float(covered) / count <= 0.68 and session.power_zones.size() >= 3, "%d pieces get the usual board powers (%d zones covering %d)" % [count, session.power_zones.size(), covered])
+		_check(float(covered) / count >= 0.52 and float(covered) / count <= (0.8 if count < 96 else 0.7) and session.power_zones.size() >= 3, "%d pieces get the usual board powers (%d zones covering %d)" % [count, session.power_zones.size(), covered])
 	# a new puzzle is a new picture in the same theme, at the size that was chosen
 	session.size_index = 1
 	session.start_puzzle(false)

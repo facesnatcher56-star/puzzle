@@ -183,7 +183,8 @@ func _test_controller() -> void:
 	_check(not rig2.surge.activate(9) and rig2.session.scoring.power_charges == 1, "a piece in the bank cannot be the target, and nothing is spent")
 	_place(rig2.manager, [9], Vector2(900, 500))
 	rig2.manager.request_pickup(9, 7)
-	_check(not rig2.surge.can_use(9, 3) and rig2.surge.can_use(9, 7), "another player's held group is off limits; its holder may use it")
+	rig2.session.scoring.ledger(7).power_charges = 1 # player 7 has a charge of their own
+	_check(not rig2.surge.can_use(9, 3) and rig2.surge.can_use(9, 7), "another player's held group is off limits; its holder (with a charge of their own) may use it")
 	rig2.manager.request_release(9, 7)
 	# fewer than three neighbours: a corner piece has two, and the surge pulls exactly those
 	var rig3 := _rig(6)

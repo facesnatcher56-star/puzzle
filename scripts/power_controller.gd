@@ -39,6 +39,7 @@ var pull_delay := 0.28 # Magnet: from a pull being announced to its piece moving
 var pull_gap := 0.12
 var rng := RandomNumberGenerator.new()
 
+var _owners := {} # zone -> the player whose action charged it: its strikes and pulls build that player's Charge
 var _queue: Array = [] # charged zones waiting their turn
 var _running := false # a queue is being worked through
 var _generation := 0 # bumped whenever the puzzle changes so a sequence in progress stops
@@ -74,6 +75,7 @@ func has_authority() -> bool:
 
 func _on_puzzle_resetting() -> void:
 	_generation += 1
+	_owners.clear()
 	_queue.clear()
 	_running = false
 
@@ -115,6 +117,7 @@ func resume_pending() -> void:
 		_drain()
 
 func _enqueue(zone: PowerZone) -> void:
+	_owners[zone] = manager.acting_player # whoever's action (or chain) charged it
 	zone.state = PowerZone.State.QUEUED
 	_queue.append(zone)
 	session.mark_dirty()
@@ -227,7 +230,11 @@ func apply_strike(piece_id: int, zone_index: int = -1) -> Array:
 	var piece := manager.get_piece(piece_id)
 	if piece == null or piece.is_locked or manager.is_power_group_held(piece_id):
 		return []
+	var previous_actor := manager.acting_player
+	if zone_index >= 0 and zone_index < zones().size():
+		manager.acting_player = int(_owners.get(zones()[zone_index], previous_actor))
 	var moved := manager.strike_piece(piece_id)
+	manager.acting_player = previous_actor
 	if moved.is_empty():
 		return moved
 	network.broadcast_power_result(piece_id)
