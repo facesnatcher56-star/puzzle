@@ -12,9 +12,9 @@ config_version=5
 
 config/name="Emberbound Jigsaw"
 run/main_scene="res://scenes/main.tscn"
-config/features=PackedStringArray("4.7", "Mobile")
-config/icon="res://icon.svg"
 config/quit_on_go_back=false
+config/features=PackedStringArray("4.8", "Mobile")
+config/icon="res://icon.svg"
 
 [display]
 
@@ -24,20 +24,33 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/handheld/orientation=4
 
+[gui]
+
+common/default_scroll_deadzone=12
+
 [input]
 
 pan_table={
 "deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":32)]
+"events": [Object(InputEventKey,
+"resource_local_to_scene": false,
+"resource_name": "",
+"device": 16,
+"window_id": 0,
+"alt_pressed": false,
+"shift_pressed": false,
+"ctrl_pressed": false,
+"meta_pressed": false,
+"pressed": false,
+"keycode": 0,
+"physical_keycode": 32,
+"key_label": 0,
+"unicode": 0,
+"location": 0,
+"echo": false,
+"script": null
+)]
 }
-
-[input_devices]
-
-pointing/emulate_mouse_from_touch=true
-
-[gui]
-
-common/default_scroll_deadzone=12
 
 [physics]
 
@@ -45,9 +58,8 @@ common/default_scroll_deadzone=12
 
 [rendering]
 
-anti_aliasing/quality/msaa_2d=2
-textures/default_filters/anisotropic_filtering_level=4
-
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
+textures/default_filters/anisotropic_filtering_level=4
+anti_aliasing/quality/msaa_2d=2
