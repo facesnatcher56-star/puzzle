@@ -2,7 +2,7 @@ class_name ClusterSurgeController
 extends Node
 
 # Cluster Surge, the player's first spendable power. Spend one Power Charge on any group on the table -- loose or
-# part of the main puzzle -- and up to three of its correct neighbours (loose pieces, pieces still in the bank,
+# part of the main puzzle -- and up to three of its correct neighbours, the ones nearest the piece clicked on (loose pieces, pieces still in the bank,
 # or whole groups) are pulled onto it and snapped. Pieces that join the main puzzle this way can charge board
 # zones, so a Surge can start or carry on a chain.
 #
@@ -87,17 +87,19 @@ func activate(piece_id: int, requester: int = 0) -> bool:
 func _on_remote_request(piece_id: int, peer_id: int) -> void:
 	activate(piece_id, peer_id)
 
-# Up to three neighbouring groups, chosen at random from those that could be pulled.
+# Up to three neighbouring groups: those whose pieces belong nearest the piece that was clicked on (by distance on
+# the board's grid), so a Surge on a big section or the main puzzle works around the clicked spot. Ties are random.
 func _pick_targets(piece_id: int) -> Array:
 	var options := manager.surge_targets(piece_id)
-	for i in range(options.size() - 1, 0, -1):
-		var j := rng.randi_range(0, i)
-		var swap = options[i]
-		options[i] = options[j]
-		options[j] = swap
+	var clicked := manager.pieces[piece_id]
+	var ranked := []
+	for option in options:
+		var target := manager.pieces[option.piece]
+		ranked.append({"piece": option.piece, "distance": Vector2(target.column - clicked.column, target.row - clicked.row).length(), "tie": rng.randf()})
+	ranked.sort_custom(func(a, b): return a.distance < b.distance or (a.distance == b.distance and a.tie < b.tie))
 	var targets := []
-	for option in options.slice(0, MAX_PULLS):
-		targets.append(option.piece)
+	for entry in ranked.slice(0, MAX_PULLS):
+		targets.append(entry.piece)
 	return targets
 
 func _run(anchor_id: int, targets: Array, requester: int) -> void:

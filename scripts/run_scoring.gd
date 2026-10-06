@@ -26,10 +26,12 @@ signal anchors_completed(player: int)
 
 enum Tier { NORMAL, WARM, HOT, ON_FIRE }
 
-const STREAK_BASE := 1.12 # each first-try placement multiplies the next awards by this much more...
-const STREAK_CAP := 20.0 # ...up to this
+const STREAK_BASE := 1.12 # each first-try placement grows the streak's raw bonus by this factor...
+const STREAK_REWARD_SCALE := 3.0 # ...and the bonus part of the multiplier (everything above x1) is paid at this many times (+200%)
+const STREAK_CAP := 60.0 # the multiplier never goes above this
 const TIER_STREAKS := [0, 3, 6, 10] # the streak at which each tier starts (the tier drives the flame, sounds and Charge)
-const CHARGE_MULTIPLIERS := [1.0, 1.1, 1.2, 1.35]
+const CHARGE_GAIN_SCALE := 1.3 # 30% more meter gain, rounded once after all multipliers.
+const CHARGE_MULTIPLIERS := [1.0, 1.3, 1.6, 2.05] # the tiers' Charge bonus (above x1) is also tripled
 
 const HOST_KEY := 0 # the host and a solo player share this key; everyone else is keyed by their peer id
 
@@ -124,7 +126,7 @@ static func tier_for(streak_length: int) -> int:
 
 # The score and Charge multiplier of a streak: exponential, so a long unbroken run is worth a great deal.
 static func streak_multiplier(streak_length: int) -> float:
-	return minf(pow(STREAK_BASE, maxi(0, streak_length)), STREAK_CAP)
+	return minf(1.0 + STREAK_REWARD_SCALE * (pow(STREAK_BASE, maxi(0, streak_length)) - 1.0), STREAK_CAP)
 
 func multiplier(key: int = -1) -> float:
 	return streak_multiplier(ledger(local_key() if key < 0 else key).streak)
@@ -216,7 +218,7 @@ func _grant(count: int, source: int, piece_ids: Array, kind: String) -> Dictiona
 	var multiplier_now := streak_multiplier(mine.streak)
 	var score_gain := roundi(float(count * 100 + cluster_bonus(count)) * multiplier_now)
 	var efficiency := 0.5 if source == PuzzleManager.ConnectionSource.POWER else 1.0
-	var charge_gain := roundi(float(base_charge(count)) * CHARGE_MULTIPLIERS[current_tier] * efficiency)
+	var charge_gain := roundi(float(base_charge(count)) * CHARGE_MULTIPLIERS[current_tier] * efficiency * CHARGE_GAIN_SCALE)
 	score += score_gain
 	var gained_charges := _add_charge(mine, charge_gain)
 	var completed_anchors := kind == "MAIN" and not anchors_rewarded and manager.anchored_corner_count() == 4

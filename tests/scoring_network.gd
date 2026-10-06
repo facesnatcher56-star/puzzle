@@ -103,7 +103,7 @@ func _run() -> void:
 	var power_event: Dictionary = host_awards.back()
 	_check(moved.size() == 6 and host_awards.size() == before_jackpot + 1 and power_event.piece_count == 6 and power_event.source == PuzzleManager.ConnectionSource.POWER, "host generated one power jackpot event")
 	await _wait_until(func(): return client_awards.size() == host_awards.size() and _shared(client_session.scoring) == _shared(host_session.scoring), 6.0, "client receives loose joins and the jackpot")
-	_check(client_awards.back() == power_event and power_event.score_gain == roundi(900.0 * float(power_event.multiplier)) and power_event.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(power_event.combo_after)] * 0.5), "client sees identical score, half Charge and combo event: %s" % [power_event])
+	_check(client_awards.back() == power_event and power_event.score_gain == roundi(900.0 * float(power_event.multiplier)) and power_event.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(power_event.combo_after)] * 0.5 * 1.3), "client sees identical score, half Charge and combo event: %s" % [power_event])
 	var received_state := client_session.scoring.to_dict()
 	client_network.scoring_sync_received.emit(received_state, power_event)
 	for i in range(15):

@@ -62,8 +62,8 @@ func _test_first_try_streak() -> void:
 	var m := rig.manager
 	var scoring := rig.session.scoring
 	# no multiplier before any streak
-	_check(RunScoring.streak_multiplier(0) == 1.0 and is_equal_approx(RunScoring.streak_multiplier(1), 1.12) and is_equal_approx(RunScoring.streak_multiplier(10), pow(1.12, 10)), "the multiplier is exponential in the streak")
-	_check(is_equal_approx(RunScoring.streak_multiplier(5) / RunScoring.streak_multiplier(4), RunScoring.streak_multiplier(9) / RunScoring.streak_multiplier(8)) and RunScoring.streak_multiplier(80) == RunScoring.STREAK_CAP, "...growing by the same factor each step, up to a cap")
+	_check(RunScoring.streak_multiplier(0) == 1.0 and is_equal_approx(RunScoring.streak_multiplier(1), 1.0 + RunScoring.STREAK_REWARD_SCALE * 0.12) and is_equal_approx(RunScoring.streak_multiplier(10), 1.0 + RunScoring.STREAK_REWARD_SCALE * (pow(1.12, 10) - 1.0)) and RunScoring.streak_multiplier(10) > 7.0, "the multiplier's bonus grows exponentially in the streak, tripled (about x7.3 at ten in a row)")
+	_check(is_equal_approx(((RunScoring.streak_multiplier(5) - 1.0) / RunScoring.STREAK_REWARD_SCALE + 1.0) / ((RunScoring.streak_multiplier(4) - 1.0) / RunScoring.STREAK_REWARD_SCALE + 1.0), RunScoring.STREAK_BASE) and RunScoring.streak_multiplier(80) == RunScoring.STREAK_CAP, "...the bonus growing by the same factor each step, up to a cap")
 	_check(RunScoring.tier_for(2) == RunScoring.Tier.NORMAL and RunScoring.tier_for(3) == RunScoring.Tier.WARM and RunScoring.tier_for(6) == RunScoring.Tier.HOT and RunScoring.tier_for(10) == RunScoring.Tier.ON_FIRE, "streak length sets the flame tier")
 	# a solo piece anchored on its corner, dropped where it belongs, is a first-try placement
 	_place(m, [0], Vector2(9, 6))
@@ -152,7 +152,7 @@ func _test_players_are_separate() -> void:
 	drop.call(0, 5, Vector2(9, 6)) # player 5 anchors the corner first try
 	_check(scoring.ledger(5).streak == 1 and scoring.ledger(RunScoring.HOST_KEY).streak == 0 and scoring.streak == 0, "a player's first-try placement builds only their own streak")
 	_check(rig.awards.back().player == 5 and rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(1)), "the award names the player and uses their own multiplier")
-	_check(scoring.ledger(5).charge == 5 and scoring.ledger(RunScoring.HOST_KEY).charge == 0 and scoring.ledger(6).charge == 0, "...and only their own Charge")
+	_check(scoring.ledger(5).charge == 7 and scoring.ledger(RunScoring.HOST_KEY).charge == 0 and scoring.ledger(6).charge == 0, "...and only their own Charge")
 	var score_after_five := scoring.score
 	drop.call(1, 6, Vector2(11, 7)) # player 6 places the next piece
 	_check(scoring.ledger(6).streak == 1 and scoring.ledger(5).streak == 1, "another player's placement does not extend your streak")
@@ -217,7 +217,7 @@ func _test_power_jackpots() -> void:
 	lightning.make_instant()
 	var moved := lightning.apply_strike(13)
 	_check(moved.size() == 6 and lightning_rig.awards.size() == 1, "Lightning moves six joined pieces in one scoring event")
-	_check(lightning_rig.awards[0].source == PuzzleManager.ConnectionSource.POWER and lightning_rig.awards[0].score_gain == 900 and lightning_rig.awards[0].charge_gain == 8, "Lightning jackpot gets full score and half Charge")
+	_check(lightning_rig.awards[0].source == PuzzleManager.ConnectionSource.POWER and lightning_rig.awards[0].score_gain == 900 and lightning_rig.awards[0].charge_gain == 10, "Lightning jackpot gets full score and half Charge")
 	_check(lightning_rig.session.scoring.streak == 0 and lightning_rig.manager.is_joined_side(12, 1), "Lightning jackpot leaves the streak alone and preserves joins")
 	var magnet_rig := _rig(118)
 	var magnet_zone := PowerZone.make(8, 6, 0, 0, 2, 2, PowerZone.Kind.MAGNET)
@@ -238,7 +238,7 @@ func _test_power_jackpots() -> void:
 	_check(magnet_zone.state == PowerZone.State.DONE and magnet_jackpots.size() == 1, "Magnet pulls a shared-perimeter cluster and awards it once")
 	if not magnet_jackpots.is_empty():
 		var jackpot: Dictionary = magnet_jackpots[0]
-		_check(jackpot.score_gain == roundi(900.0 * float(jackpot.multiplier)) and jackpot.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(jackpot.combo_after)] * 0.5), "Magnet jackpot gets full score at the streak's multiplier and half Charge at the active tier")
+		_check(jackpot.score_gain == roundi(900.0 * float(jackpot.multiplier)) and jackpot.charge_gain == roundi(15.0 * RunScoring.CHARGE_MULTIPLIERS[int(jackpot.combo_after)] * 0.5 * 1.3), "Magnet jackpot gets full score at the streak's multiplier and half Charge at the active tier")
 	_check(magnet_rig.manager.is_joined_side(10, 2), "Magnet jackpot keeps the cluster joins")
 
 func _test_opening_anchors_and_pulse() -> void:
@@ -265,7 +265,7 @@ func _test_charge_overflow_and_save() -> void:
 	rig.manager.request_pickup(8)
 	rig.manager.request_move(8, rig.manager.pieces[8].correct_position + Vector2(11, 7))
 	rig.manager.request_release(8)
-	_check(rig.session.scoring.power_charges == 1 and rig.session.scoring.charge == 7 and rig.awards.back().charges_gained == 1, "overflow creates a stored Power Charge and keeps seven")
+	_check(rig.session.scoring.power_charges == 1 and rig.session.scoring.charge == 12 and rig.awards.back().charges_gained == 1, "overflow creates a stored Power Charge and keeps twelve")
 	var huge := _rig(120)
 	var source: Texture2D = load("res://assets/emberbound.png")
 	var board := Vector2(1122, 1402)

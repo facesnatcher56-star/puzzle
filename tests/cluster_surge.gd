@@ -75,6 +75,7 @@ func _rigid(m: PuzzleManager, ids: Array) -> bool:
 
 func _run() -> void:
 	_test_targets()
+	_test_targets_near_the_click()
 	_test_pulling_onto_a_loose_group()
 	_test_pulling_onto_the_main_puzzle()
 	_test_controller()
@@ -120,6 +121,18 @@ func _test_targets() -> void:
 		below.append(t.piece)
 	below.sort()
 	_check(below == [8, 9, 10, 11, 12, 13, 14, 15], "an anchored group's targets are the unfinished neighbours all along its exposed edge")
+
+# A Surge on a big section works around the piece that was clicked, not at random along the whole edge.
+func _test_targets_near_the_click() -> void:
+	for seed_value in range(1, 6):
+		var rig := _rig(seed_value)
+		_top(rig.manager)
+		var picked: Array = rig.surge._pick_targets(3)
+		picked.sort()
+		_check(picked == [10, 11, 12], "clicking piece 3 of the anchored top row pulls the pieces beneath it and beside that (seed %d: %s)" % [seed_value, picked])
+		picked = rig.surge._pick_targets(0)
+		picked.sort()
+		_check(picked == [8, 9, 10] or picked == [8, 9], "clicking the corner pulls the pieces nearest it (seed %d: %s)" % [seed_value, picked])
 
 # --- a loose group grows where it sits ---
 
