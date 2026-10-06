@@ -76,6 +76,7 @@ func _rigid(m: PuzzleManager, ids: Array) -> bool:
 func _run() -> void:
 	_test_targets()
 	_test_targets_near_the_click()
+	_test_saved_game()
 	_test_pulling_onto_a_loose_group()
 	_test_pulling_onto_the_main_puzzle()
 	_test_controller()
@@ -123,6 +124,27 @@ func _test_targets() -> void:
 	_check(below == [8, 9, 10, 11, 12, 13, 14, 15], "an anchored group's targets are the unfinished neighbours all along its exposed edge")
 
 # A Surge on a big section works around the piece that was clicked, not at random along the whole edge.
+# A saved game that is loaded again behaves the same: the Surge works around the clicked piece.
+func _test_saved_game() -> void:
+	var rig := _rig(12)
+	_top(rig.manager)
+	SaveManager.save_dir = "user://test_saves_surge"
+	rig.session.save_slot = "surge_test"
+	rig.session.write_save()
+	var loaded := PuzzleSession.new()
+	var loaded_manager := PuzzleManager.new()
+	root.add_child(loaded)
+	loaded.setup(loaded_manager, rig.network)
+	_check(loaded.load_session("surge_test") and loaded_manager.is_in_main_puzzle(0), "the saved main puzzle loads")
+	loaded.scoring.from_dict({"power_charges": 1})
+	var surge := ClusterSurgeController.new()
+	root.add_child(surge)
+	surge.setup(loaded, loaded_manager, rig.network, loaded.scoring)
+	surge.make_instant()
+	var picked: Array = surge._pick_targets(0)
+	_check(picked == [8, 9, 10] or picked == [8, 9], "after loading a save, clicking the corner pulls the pieces nearest it: %s" % [picked])
+	_check(surge.activate(0) and loaded.scoring.power_charges == 0, "...and the Surge fires on the loaded game")
+
 func _test_targets_near_the_click() -> void:
 	for seed_value in range(1, 6):
 		var rig := _rig(seed_value)
