@@ -60,6 +60,7 @@ func _ready() -> void:
 	_create_controllers()
 	_build_screen()
 	_connect_signals()
+	_create_gamepad()
 	get_viewport().size_changed.connect(_on_viewport_resized)
 	lobby.show_main_menu()
 
@@ -177,6 +178,32 @@ func _input(event: InputEvent) -> void:
 	if lobby.is_open():
 		return
 	input_controller.handle_input(event)
+
+# Controller play: a virtual cursor and buttons that send ordinary mouse and key events (see GamepadController).
+func _create_gamepad() -> void:
+	var pad := GamepadController.new()
+	pad.camera = camera
+	pad.enabled = func(): return not lobby.is_open()
+	pad.is_table = input_controller.is_table_screen
+	pad.zoom_at = input_controller.zoom_at
+	pad.over_bank = func(at: Vector2) -> bool: return at.y >= get_viewport().get_visible_rect().size.y - bank.bank_height
+	pad.bank_scroll = bank.scroll_by
+	pad.bank_page = bank.scroll_page
+	pad.bank_tray = bank.cycle_filter
+	pad.back_pressed.connect(func():
+		if ability_bar.cancel_targeting():
+			return
+		if reference.is_open():
+			reference.close()
+		elif lobby.is_open():
+			lobby.handle_escape())
+	pad.menu_pressed.connect(func():
+		if lobby.is_open():
+			lobby.handle_escape()
+		else:
+			_open_pause_menu())
+	pad.reference_pressed.connect(func(): input_controller.on_bank_action("reference"))
+	add_child(pad)
 
 # Escape: cancel power targeting, close the reference window, step back through a menu, or open the pause menu.
 func _on_escape() -> void:

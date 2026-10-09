@@ -6,22 +6,59 @@ const PATH := "user://settings.cfg"
 static var vibration_enabled := true
 const RESOLUTIONS := [
 	Vector2i(1280, 720), Vector2i(1366, 768), Vector2i(1600, 900), Vector2i(1920, 1080),
-	Vector2i(2560, 1440), Vector2i(3440, 1440), Vector2i(3840, 2160)
+	Vector2i(2560, 1440), Vector2i(2560, 1600), Vector2i(3440, 1440), Vector2i(3840, 2160)
 ]
 
 static func is_supported() -> bool:
 	return not OS.has_feature("mobile") and DisplayServer.get_name() != "headless"
 
-# Resolutions that fit on the current monitor (a window can't usefully be larger than the screen).
-static func available_resolutions() -> Array:
-	var usable := DisplayServer.screen_get_usable_rect().size
+# Resolutions that fit on the monitor, judged against its full size (not the area left after the task bar, which
+# would hide 1440p and 4K from a monitor of exactly that size). `screen` is the monitor's size in pixels.
+static func resolutions_for(screen: Vector2i) -> Array:
 	var result := []
 	for res in RESOLUTIONS:
-		if res.x <= usable.x and res.y <= usable.y:
+		if res.x <= screen.x and res.y <= screen.y:
 			result.append(res)
 	if result.is_empty():
 		result.append(Vector2i(1280, 720))
 	return result
+
+# The largest monitor connected, so a 4K screen plugged into a handheld or laptop still offers 4K.
+static func largest_screen() -> Vector2i:
+	var best := DisplayServer.screen_get_size()
+	for i in range(DisplayServer.get_screen_count()):
+		var size := DisplayServer.screen_get_size(i)
+		if size.x * size.y > best.x * best.y:
+			best = size
+	return best
+
+# The monitor to use for a window of `size`: the one it is on if it fits, otherwise the biggest.
+static func screen_for(size: Vector2i) -> int:
+	var current := DisplayServer.window_get_current_screen()
+	var current_size := DisplayServer.screen_get_size(current)
+	if size.x <= current_size.x and size.y <= current_size.y:
+		return current
+	var best := current
+	for i in range(DisplayServer.get_screen_count()):
+		var candidate := DisplayServer.screen_get_size(i)
+		var best_size := DisplayServer.screen_get_size(best)
+		if candidate.x * candidate.y > best_size.x * best_size.y:
+			best = i
+	return best
+
+static func available_resolutions() -> Array:
+	return resolutions_for(largest_screen())
+
+# "2560 x 1440 (2K)", "3840 x 2160 (4K)"; the others are just the size.
+static func resolution_label(size: Vector2i) -> String:
+	var text := "%d x %d" % [size.x, size.y]
+	if size == Vector2i(2560, 1440):
+		return text + " (2K)"
+	if size == Vector2i(3840, 2160):
+		return text + " (4K)"
+	if size == Vector2i(1920, 1080):
+		return text + " (Full HD)"
+	return text
 
 static func load_settings() -> Dictionary:
 	var config := ConfigFile.new()
@@ -49,9 +86,11 @@ static func apply(fullscreen: bool, size: Vector2i) -> void:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 		return
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_current_screen(screen_for(size)) # a 4K window goes to the 4K monitor
 	DisplayServer.window_set_size(size)
-	var usable := DisplayServer.screen_get_usable_rect()
-	DisplayServer.window_set_position(usable.position + (usable.size - size) / 2)
+	var usable := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	var corner := usable.position + (usable.size - size) / 2
+	DisplayServer.window_set_position(Vector2i(maxi(corner.x, usable.position.x), maxi(corner.y, usable.position.y))) # never leave the title bar off-screen
 
 static func apply_saved() -> void:
 	if not FileAccess.file_exists(PATH):

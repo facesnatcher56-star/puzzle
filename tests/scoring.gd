@@ -91,9 +91,10 @@ func _test_first_try_streak() -> void:
 	_check(m.pieces[9].is_locked and scoring.streak == 4 and rig.awards.back().first_try, "...and it still counts as a first-try placement when it goes in")
 	# dropped beside another piece without joining: the streak ends, but nothing is taken away
 	score_before = scoring.score
-	m.request_place_from_bank(3, m.pieces[3].correct_position + Vector2(11, 7))
+	m.request_place_from_bank(40, Vector2(2000, 1500)) # a loose piece for it to land beside (locked ones never count)
+	m.request_place_from_bank(3, m.pieces[40].current_position + Vector2(m.cell_size.x * 0.9, 0))
 	m.request_pickup(3)
-	m.request_rotate(3) # the wrong way up, right beside the border
+	m.request_rotate(3) # the wrong way up, right beside the other piece
 	m.request_release(3)
 	_check(not m.pieces[3].is_locked and m.pieces[3].attempted, "a piece dropped near another one without joining has had its attempt")
 	_check(scoring.streak == 0 and scoring.score == score_before and scoring.best_streak == 4, "the streak ends, the score is untouched, and the best streak is remembered")
@@ -159,8 +160,9 @@ func _test_players_are_separate() -> void:
 	_check(rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(1)) and scoring.score == score_after_five + rig.awards.back().score_gain, "...but the score is everyone's")
 	drop.call(2, 5, Vector2(11, 7))
 	_check(scoring.ledger(5).streak == 2 and scoring.ledger(6).streak == 1 and rig.awards.back().score_gain == roundi(100.0 * RunScoring.streak_multiplier(2)), "each player is paid at their own multiplier")
-	# player 6 drops a piece beside the border wrong way up: their streak ends, player 5's does not
-	m.request_place_from_bank(3, m.pieces[3].correct_position + Vector2(11, 7))
+	# player 6 drops a piece beside a loose one wrong way up: their streak ends, player 5's does not
+	m.request_place_from_bank(40, Vector2(2000, 1500))
+	m.request_place_from_bank(3, m.pieces[40].current_position + Vector2(m.cell_size.x * 0.9, 0))
 	m.request_pickup(3, 6)
 	m.request_rotate(3)
 	var before := scoring.score

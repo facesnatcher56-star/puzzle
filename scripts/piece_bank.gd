@@ -153,6 +153,25 @@ func set_filter(value: String) -> void:
 	filter_name = value
 	refresh()
 
+# Moves the row of pieces sideways by `pixels` (controller and keyboard use).
+func scroll_by(pixels: float) -> void:
+	scroll.scroll_horizontal = maxi(0, scroll.scroll_horizontal + roundi(pixels))
+
+# One screenful further along (or back) the row.
+func scroll_page(direction: int) -> void:
+	scroll_by(direction * maxf(120.0, scroll.size.x - 90.0))
+
+# The next (or previous) tray: ALL, EDGE, CORNER, TRAY 1 and round again; the header scrolls to show it.
+func cycle_filter(step: int) -> void:
+	var index := 0
+	for i in range(FILTERS.size()):
+		if FILTERS[i][0] == filter_name:
+			index = i
+	var next: String = FILTERS[posmod(index + step, FILTERS.size())][0]
+	set_filter(next)
+	header_scroll.ensure_control_visible(buttons["filter:" + next])
+	scroll.scroll_horizontal = 0
+
 func set_selected(piece_id: int) -> void:
 	selected_id = piece_id
 	for item in row.get_children():

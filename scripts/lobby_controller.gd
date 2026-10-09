@@ -593,7 +593,7 @@ func _build_settings() -> void:
 		var resolutions := DisplaySettings.available_resolutions()
 		var best := 0
 		for i in range(resolutions.size()):
-			_settings_resolution_picker.add_item("%d x %d" % [resolutions[i].x, resolutions[i].y])
+			_settings_resolution_picker.add_item(DisplaySettings.resolution_label(resolutions[i]))
 			if absi(resolutions[i].x * resolutions[i].y - saved_size.x * saved_size.y) < absi(resolutions[best].x * resolutions[best].y - saved_size.x * saved_size.y):
 				best = i
 		_settings_resolution_picker.select(best)
@@ -602,7 +602,8 @@ func _build_settings() -> void:
 		_settings_resolution_picker.item_selected.connect(func(_i: int): _apply_display_choice())
 		_settings_row("Window", _settings_fullscreen_picker)
 		_settings_row("Resolution", _settings_resolution_picker)
-		_caption("Resolution applies to windowed mode. Fullscreen uses your monitor's native resolution.")
+		_caption("Resolution applies to windowed mode (2K and 4K need a monitor that large). Fullscreen uses your monitor's native resolution; the menus and board scale to fit.")
+	_caption("Controller: left stick moves the cursor (hold LB to slow it), A clicks and drags, right stick pans, triggers zoom, RB or X turns a piece, D-pad uses abilities, Y shows the picture, B goes back, Start pauses. Over the piece bank: right stick scrolls, triggers page, LB and RB switch tray.")
 	var volume := HSlider.new()
 	volume.min_value = 0
 	volume.max_value = 100

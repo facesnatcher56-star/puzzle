@@ -20,6 +20,9 @@ enum ConnectionSource { MANUAL, POWER }
 # check uses the same distance: with a tighter one, a shallow V-shaped tab -- whose contour stops touching its
 # groove after about a third of that distance -- refused to join while square and round tabs joined fine.
 const SNAP_TOLERANCE := 0.20
+# A piece (or group) let go this near its true spot on the board, facing the right way, beside the finished part,
+# locks into place: twice the distance that joins it to a neighbouring piece.
+const BOARD_SNAP_TOLERANCE := SNAP_TOLERANCE * 2.0
 
 var pieces: Array[PuzzlePieceState] = []
 var cell_size := Vector2.ONE
@@ -449,7 +452,8 @@ func _group_is_held(piece: PuzzlePieceState) -> bool:
 	return false
 
 # True when any piece of this group is within snapping distance of a piece that is not in the group: their
-# outlines' boxes are no further apart than a piece may sit from its true spot and still join.
+# outlines' boxes are no further apart than a piece may sit from its true spot and still join. Pieces already locked
+# into the board never count: dropping on top of finished ground is not a wrong guess.
 func _near_other_piece(piece_id: int) -> bool:
 	var tolerance := minf(cell_size.x, cell_size.y) * SNAP_TOLERANCE
 	var own := cluster_members(piece_id)
@@ -457,7 +461,7 @@ func _near_other_piece(piece_id: int) -> bool:
 		var member: PuzzlePieceState = pieces[id]
 		var centre := member.current_position + member.piece_size * 0.5
 		for other in pieces:
-			if not other.is_on_table or other.cluster_id == member.cluster_id:
+			if not other.is_on_table or other.is_locked or other.cluster_id == member.cluster_id:
 				continue
 			var gap := (member.piece_size + other.piece_size) * 0.5 + Vector2(tolerance, tolerance)
 			var apart := (other.current_position + other.piece_size * 0.5 - centre).abs()
@@ -474,20 +478,20 @@ func _try_lock(cluster_id: int, source: int = ConnectionSource.MANUAL) -> void:
 		already = already or pieces[id].is_locked
 	var sides := []
 	if not already:
+		sides = complete_sides(members)
 		var anchor_id := -1
 		for id in corner_ids():
 			if members.has(id):
 				anchor_id = id
 				break
-		if anchor_id < 0:
-			return
-		sides = complete_sides(members)
-		var anchor: PuzzlePieceState = pieces[anchor_id]
-		var tolerance := minf(cell_size.x, cell_size.y) * 0.45
 		for id in members:
 			if pieces[id].current_rotation != 0:
 				return
-		if (anchor.current_position - anchor.correct_position).length() > tolerance:
+		var anchored := false
+		if anchor_id >= 0:
+			var anchor: PuzzlePieceState = pieces[anchor_id]
+			anchored = (anchor.current_position - anchor.correct_position).length() <= minf(cell_size.x, cell_size.y) * 0.45
+		if not anchored and not _near_true_spot(members):
 			return
 	var newly_locked := []
 	for id in members:
@@ -504,6 +508,21 @@ func _try_lock(cluster_id: int, source: int = ConnectionSource.MANUAL) -> void:
 	if not newly_locked.is_empty():
 		main_puzzle_connected.emit(newly_locked.duplicate(), source)
 		group_locked.emit(cluster_id, members.duplicate(), sides)
+
+# True if some member of the (rigid) group sits within BOARD_SNAP_TOLERANCE of its true board spot with a piece that
+# belongs beside it already locked there: the main puzzle only ever grows outward from its anchors, so a piece that
+# is merely at its true spot far from the finished part stays loose.
+func _near_true_spot(members: Array) -> bool:
+	var tolerance := minf(cell_size.x, cell_size.y) * BOARD_SNAP_TOLERANCE
+	for id in members:
+		var member: PuzzlePieceState = pieces[id]
+		if (member.current_position - member.correct_position).length() > tolerance:
+			continue
+		for side in range(4):
+			var neighbor_id := _correct_neighbor(member, side)
+			if neighbor_id >= 0 and pieces[neighbor_id].is_locked:
+				return true
+	return false
 
 func locked_count() -> int:
 	var count := 0
