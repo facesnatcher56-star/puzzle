@@ -252,6 +252,7 @@ func _build_screen() -> void:
 	hud = GameHud.new()
 	hud.setup(session.scoring, manager, session)
 	hud.menu_requested.connect(_open_pause_menu)
+	hud.reference_requested.connect(func(): input_controller.on_bank_action("reference"))
 	ui_root.add_child(hud)
 	_build_ability_bar()
 	_build_complete_banner()
@@ -313,7 +314,7 @@ func _on_puzzle_resetting() -> void:
 
 func _on_image_changed(id: String) -> void:
 	reference.set_image(session.source)
-	bank.set_tool_enabled("reference", id == "") # Random mode has no reference picture
+	bank.set_tool_enabled("reference", true) # every puzzle, new or loaded, has its picture to look at
 
 func _on_puzzle_started(pieces: Array) -> void:
 	if bank.collapsed:

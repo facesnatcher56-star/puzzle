@@ -417,10 +417,11 @@ func on_bank_action(action: String) -> void:
 	elif action == "new":
 		session.start_puzzle(true)
 	elif action == "reference":
-		if session.image_id != "":
-			return
-		reference.open()
-		hide_preview()
+		if reference.is_open():
+			reference.close()
+		else:
+			reference.open()
+			hide_preview()
 	elif action == "collapse":
 		bank.toggle_collapsed()
 		hide_preview()

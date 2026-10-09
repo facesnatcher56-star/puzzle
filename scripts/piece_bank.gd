@@ -73,7 +73,7 @@ func _add_tools_menu() -> void:
 	tools_menu.id_pressed.connect(func(id: int): action_requested.emit(TOOLS[id][0]))
 	header.add_child(tools_button)
 
-# Greys out a tool in the "⋯" menu (e.g. Reference in Random mode, which has no reference picture).
+# Greys out a tool in the "⋯" menu.
 func set_tool_enabled(action: String, enabled: bool) -> void:
 	for i in range(TOOLS.size()):
 		if TOOLS[i][0] == action:

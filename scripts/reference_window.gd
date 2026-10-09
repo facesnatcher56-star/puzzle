@@ -8,7 +8,12 @@ extends Control
 
 const TITLE_HEIGHT := 32.0
 const GRIP_SIZE := 18.0
-const MIN_SIZE := Vector2(280, 240)
+const MIN_SIZE := Vector2(140, 110)
+const EDGE := 9.0 # how close to the border a press must be to resize from that edge
+const LEFT := 1
+const RIGHT := 2
+const TOP := 4
+const BOTTOM := 8
 
 var texture: Texture2D
 var panel: Panel
@@ -21,7 +26,8 @@ var positioned := false
 var dragging := false
 var resizing := false
 var panning := false
-var resize_start_size := Vector2.ZERO
+var resize_edges := 0
+var resize_start_rect := Rect2()
 var resize_start_mouse := Vector2.ZERO
 var zoom := 1.0
 var touch_index := -1
@@ -62,13 +68,15 @@ func _ready() -> void:
 	panel.add_child(image_area)
 	image_view = TextureRect.new()
 	image_view.texture = texture
+	image_view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE # sized by _update_image_layout, not by the picture's own size
+	image_view.stretch_mode = TextureRect.STRETCH_SCALE
 	image_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	image_area.add_child(image_view)
 
 	grip = ColorRect.new()
 	grip.color = Color(1, 1, 1, 0.18)
 	grip.mouse_filter = Control.MOUSE_FILTER_STOP
-	grip.tooltip_text = "Drag to resize"
+	grip.tooltip_text = "Drag any edge or corner to resize"
 	panel.add_child(grip)
 
 	panel.size = Vector2(560, 460)
@@ -93,7 +101,9 @@ func set_image(new_texture: Texture2D) -> void:
 	image_view.texture = new_texture
 	visible = false
 	zoom = 1.0
+	image_view.position = Vector2.ZERO
 	_update_image_layout()
+	_clamp_pan()
 
 func window_rect() -> Rect2:
 	return panel.get_global_rect()
@@ -104,7 +114,7 @@ func relayout() -> void:
 	if panel == null:
 		return
 	var viewport_size := get_viewport_rect().size
-	var max_size := Vector2(maxf(MIN_SIZE.x, viewport_size.x - 24), maxf(MIN_SIZE.y, viewport_size.y - 24))
+	var max_size := Vector2(maxf(MIN_SIZE.x, viewport_size.x - 24), maxf(MIN_SIZE.y, viewport_size.y - 72))
 	panel.size = Vector2(minf(panel.size.x, max_size.x), minf(panel.size.y, max_size.y))
 	if not positioned:
 		panel.position = ((viewport_size - panel.size) * 0.5).max(Vector2(12, 60))
@@ -122,7 +132,7 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		return false
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 		if event.pressed and _image_rect().has_point(event.position):
-			_zoom_at(event.position, 1.15 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.15)
+			_zoom_at(event.position, 1.2 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.2)
 			return true
 		return window_rect().has_point(event.position)
 	if event.button_index != MOUSE_BUTTON_LEFT:
@@ -135,6 +145,8 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 
 # Returns true while a drag/resize/pan started in this window is in progress (the board must ignore the motion).
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
+	if visible and panel != null and not (dragging or resizing or panning):
+		panel.mouse_default_cursor_shape = _cursor_for(_edges_at(event.position))
 	return _drive(event.relative, event.position)
 
 # A touch that lands on the window. `no_other_fingers` is false during a multi-finger gesture on the board.
@@ -160,9 +172,11 @@ func handle_touch_release(index: int) -> void:
 # --- internals ---
 
 func _begin_interaction(position: Vector2) -> bool:
-	if _grip_rect().has_point(position):
+	var edges := _edges_at(position)
+	if edges != 0:
 		resizing = true
-		resize_start_size = panel.size
+		resize_edges = edges
+		resize_start_rect = window_rect()
 		resize_start_mouse = position
 		return true
 	if _title_rect().has_point(position):
@@ -184,8 +198,22 @@ func _drive(relative: Vector2, position: Vector2) -> bool:
 		relayout()
 		return true
 	if resizing:
-		var new_size: Vector2 = resize_start_size + (position - resize_start_mouse)
-		panel.size = Vector2(maxf(MIN_SIZE.x, new_size.x), maxf(MIN_SIZE.y, new_size.y))
+		var delta := position - resize_start_mouse
+		var rect := resize_start_rect
+		if resize_edges & LEFT:
+			var right := rect.end.x
+			rect.position.x = minf(rect.position.x + delta.x, right - MIN_SIZE.x)
+			rect.size.x = right - rect.position.x
+		if resize_edges & RIGHT:
+			rect.size.x = maxf(MIN_SIZE.x, rect.size.x + delta.x)
+		if resize_edges & TOP:
+			var bottom := rect.end.y
+			rect.position.y = minf(rect.position.y + delta.y, bottom - MIN_SIZE.y)
+			rect.size.y = bottom - rect.position.y
+		if resize_edges & BOTTOM:
+			rect.size.y = maxf(MIN_SIZE.y, rect.size.y + delta.y)
+		panel.position = rect.position
+		panel.size = rect.size
 		relayout()
 		return true
 	if panning:
@@ -240,10 +268,39 @@ func _zoom_at(screen_position: Vector2, multiplier: float) -> void:
 	var area_pos := image_area.get_global_rect().position
 	var old_size := image_view.size
 	var fraction := (screen_position - area_pos - image_view.position) / old_size
-	zoom = clampf(zoom * multiplier, 1.0, 4.0)
+	zoom = clampf(zoom * multiplier, 1.0, 8.0)
 	_update_image_layout()
 	image_view.position = screen_position - area_pos - fraction * image_view.size
 	_clamp_pan()
+
+# Which borders of the window a point is on (a bitmask of LEFT/RIGHT/TOP/BOTTOM; corners are two); 0 = none.
+func _edges_at(position: Vector2) -> int:
+	var rect := window_rect()
+	if not rect.grow(EDGE * 0.5).has_point(position):
+		return 0
+	var edges := 0
+	if position.x <= rect.position.x + EDGE:
+		edges |= LEFT
+	elif position.x >= rect.end.x - EDGE:
+		edges |= RIGHT
+	if position.y <= rect.position.y + EDGE:
+		edges |= TOP
+	elif position.y >= rect.end.y - EDGE:
+		edges |= BOTTOM
+	if _grip_rect().has_point(position):
+		edges = RIGHT | BOTTOM
+	# the close button keeps its own corner
+	if close_button.get_global_rect().has_point(position):
+		return 0
+	return edges
+
+func _cursor_for(edges: int) -> Control.CursorShape:
+	match edges:
+		LEFT, RIGHT: return Control.CURSOR_HSIZE
+		TOP, BOTTOM: return Control.CURSOR_VSIZE
+		LEFT | TOP, RIGHT | BOTTOM: return Control.CURSOR_FDIAGSIZE
+		RIGHT | TOP, LEFT | BOTTOM: return Control.CURSOR_BDIAGSIZE
+	return Control.CURSOR_ARROW
 
 func _title_rect() -> Rect2:
 	return title_bar.get_global_rect()

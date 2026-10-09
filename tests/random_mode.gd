@@ -20,9 +20,20 @@ func _run() -> void:
 	_check(PuzzleCatalog.RANDOM_IMAGES.has(game.session.image_id), "random mode picks one of the bundled images")
 	_check(game.session.board_size == game.session.source.get_size(), "board matches the picked image")
 	_check(game.manager.pieces.size() == 252, "default random puzzle has 252 pieces")
-	_check(not game.bank.is_tool_enabled("reference"), "reference tool unavailable in random mode")
+	_check(game.bank.is_tool_enabled("reference"), "reference tool is available in random mode")
 	game.input_controller.on_bank_action("reference")
-	_check(not game.reference.visible, "reference window cannot open")
+	_check(game.reference.visible and game.reference.texture == game.session.source, "reference window opens with the random picture")
+	game.reference.close()
+	# a saved game of any picture shows its own reference when it is loaded
+	var saved: Dictionary = game.session.puzzle_config()
+	var snapshots := []
+	for piece in game.manager.pieces:
+		snapshots.append(piece.snapshot())
+	saved["pieces"] = snapshots
+	game.session.new_session(false)
+	game.session.restore_puzzle(saved)
+	await process_frame
+	_check(game.bank.is_tool_enabled("reference") and game.reference.texture == game.session.source and game.session.image_id == str(saved.image_id), "a restored random game keeps its reference picture")
 	var seen := {}
 	for i in range(30):
 		var before: String = game.session.image_id

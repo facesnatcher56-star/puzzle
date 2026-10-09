@@ -8,6 +8,7 @@ extends Control
 # menu or the bank's "⋯" button so the puzzle keeps the screen.
 
 signal menu_requested
+signal reference_requested
 
 const HEIGHT := 36.0
 const TABLE_TOP := HEIGHT + 30.0 # the table starts below the strip and the objective band under it
@@ -30,6 +31,7 @@ var charges: Diamonds
 var objective_label: Label
 var network_label: Label
 var menu_button: Button
+var reference_button: Button
 var _toasts := []
 var _objective_done := false # the four corners have been anchored in this puzzle; the objective never comes back
 
@@ -169,6 +171,14 @@ func _ready() -> void:
 	row.add_child(spacer)
 	network_label = _label(11, Color("9fd6c8"), "")
 	row.add_child(network_label)
+	reference_button = Button.new()
+	reference_button.text = "Reference"
+	reference_button.focus_mode = Control.FOCUS_NONE
+	reference_button.custom_minimum_size = Vector2(90, 28)
+	reference_button.add_theme_font_size_override("font_size", 13)
+	reference_button.tooltip_text = "Show or hide the finished picture"
+	reference_button.pressed.connect(func(): reference_requested.emit())
+	row.add_child(reference_button)
 	menu_button = Button.new()
 	menu_button.text = "☰"
 	menu_button.focus_mode = Control.FOCUS_NONE
